@@ -68,6 +68,9 @@
   .toast { position: fixed; left: 50%; bottom: calc(90px + env(safe-area-inset-bottom)); transform: translateX(-50%);
     background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 99px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; white-space: nowrap; }
   .toast.show { opacity: .92; }
+  .yt { aspect-ratio: 16 / 9; width: 100%; border-radius: 10px; overflow: hidden; background: #000; }
+  .yt iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .tag.t { background: transparent; border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -83,14 +86,14 @@
 <script>
 "use strict";
 // ---------- 保存(すべて端末内のIndexedDB。外部送信はしない) ----------
-const DB_NAME = "ttcoach", DB_VER = 1;
+const DB_NAME = "ttcoach", DB_VER = 2;
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
     const r = indexedDB.open(DB_NAME, DB_VER);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ["players", "matches", "practices", "tasks", "videos"]) {
+      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings"]) {
         if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" });
       }
     };
@@ -191,7 +194,7 @@ async function screenPlayer(pid, tab = "matches") {
       <button class="list-item" data-go="#/r/${m.id}">
         <span class="grow"><b>${esc(m.date)}</b> vs ${esc(m.oppType || "相手")}
           ${m.result ? `<span class="tag ${m.result}">${m.result === "win" ? "勝ち" : "負け"}</span>` : ""}
-          <br><span class="muted">${esc(m.score || "")} ${m.videoId ? "🎥" : ""} しるし ${(m.markers || []).length}件</span></span><span class="muted">›</span>
+          <br><span class="muted">${esc(m.score || "")} ${m.videoId ? "🎥" : m.youtubeId ? "▶ YouTube" : ""} しるし ${(m.markers || []).length}件</span></span><span class="muted">›</span>
       </button>`).join("") : `<div class="empty">試合の記録はまだありません</div>`;
     body += `<button class="btn fab" id="add">+ 試合</button>`;
   } else if (tab === "practices") {
@@ -260,8 +263,17 @@ async function screenMatch(mid) {
     <div class="card" id="vbox">
       <input type="file" id="file" accept="video/*" hidden>
       <div id="vwrap"></div>
-      <button class="btn sub block" id="pick">${m.videoId ? "動画を差し替える" : "端末から動画を選ぶ"}</button>
-      <p class="muted" style="margin:8px 0 0">動画はこの端末の中だけに保存され、外部にアップロードされません。</p>
+      <div id="vctl"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn sub grow" id="pick">${m.videoId ? "端末の動画を差し替え" : "端末の動画を選ぶ"}</button>
+        <button class="btn sub grow" id="ytBtn">${m.youtubeId ? "YouTubeを変更" : "YouTubeのURL"}</button>
+      </div>
+      <div id="ytForm" hidden>
+        <label>YouTube の動画の URL</label>
+        <div class="row"><input id="ytUrl" class="grow" inputmode="url" placeholder="https://youtu.be/…" value="${m.youtubeId ? "https://youtu.be/" + esc(m.youtubeId) : ""}"><button class="btn" id="ytSet">読み込む</button></div>
+        <p class="muted" style="margin:6px 0 0">「非公開」の動画は再生できません。YouTube 側で「限定公開」にしてください。</p>
+      </div>
+      <p class="muted" style="margin:8px 0 0">${m.youtubeId ? "YouTube の動画をアプリの中で再生しています(動画ファイルは保存しません)。" : "端末の動画はこの端末の中だけに保存され、外部にアップロードされません。"}</p>
     </div>
     <h2 id="mcount">しるし(${m.markers.length})</h2>
     <div class="card" id="mlist"></div>
@@ -280,52 +292,75 @@ async function screenMatch(mid) {
     const vid = m.videoId || uid();
     try { await put("videos", { id: vid, blob: f, name: f.name, type: f.type }); }
     catch (e) { alert("動画を保存できませんでした(端末の空き容量を確認してください)\n" + e); return; }
-    m.videoId = vid; await save(); toast("保存しました"); render();
+    m.videoId = vid; m.youtubeId = null; await save(); toast("保存しました"); render();
   };
-  const vwrap = document.getElementById("vwrap");
-  let video = null;
-  if (m.videoId) {
-    const v = await get("videos", m.videoId);
-    if (v) {
-      currentUrl = URL.createObjectURL(v.blob);
-      vwrap.innerHTML = `<video id="video" src="${currentUrl}" controls playsinline preload="metadata"></video>
-        <div class="timeline" id="tl"></div>
-        <button class="btn mark block" id="markBtn">● しるし</button>
-        <div id="markForm" hidden>
-          <label id="markAt"></label>
-          <input id="markText" placeholder="ひとことコメント">
-          <div class="chips">${MARK_PRESETS.map((p) => `<button class="chip" data-preset="${esc(p)}">${esc(p)}</button>`).join("")}</div>
-          <div class="row" style="margin-top:10px"><button class="btn sub grow" id="markCancel">やめる</button><button class="btn grow" id="markSave">付ける</button></div>
-        </div>`;
-      video = document.getElementById("video");
-      let pending = 0;
-      const form = document.getElementById("markForm"), text = document.getElementById("markText");
-      document.getElementById("markBtn").onclick = () => {
-        video.pause(); pending = video.currentTime;
-        document.getElementById("markAt").textContent = `${fmt(pending)} の場面にコメント`;
-        form.hidden = false; text.value = ""; text.focus();
-      };
-      form.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => (text.value = b.dataset.preset)));
-      document.getElementById("markCancel").onclick = () => (form.hidden = true);
-      document.getElementById("markSave").onclick = async () => {
-        m.markers.push({ id: uid(), t: pending, text: text.value.trim() || "(コメントなし)" });
-        m.markers.sort((a, b) => a.t - b.t);
-        await save(); form.hidden = true; drawMarkers(); toast("しるしを付けました");
-      };
-      video.addEventListener("loadedmetadata", drawTimeline);
+  document.getElementById("ytBtn").onclick = () => { const f = document.getElementById("ytForm"); f.hidden = !f.hidden; if (!f.hidden) document.getElementById("ytUrl").focus(); };
+  document.getElementById("ytSet").onclick = async () => {
+    const id = parseYouTube(document.getElementById("ytUrl").value);
+    if (!id) return alert("YouTube の動画の URL を読み取れませんでした。\n共有ボタンの「コピー」で取れる URL を貼ってください。");
+    if (m.videoId) {
+      if (!confirm("この試合に保存している端末の動画を削除して、YouTube の動画に切り替えます。よろしいですか?(しるしは残ります)")) return;
+      await del("videos", m.videoId); m.videoId = null;
     }
+    m.youtubeId = id; await save(); toast("YouTube の動画を読み込みました"); render();
+  };
+
+  const tags = await getTags();
+  const player = await mountPlayer(m, document.getElementById("vwrap"));
+  let editingMarker = null;
+  if (player) {
+    document.getElementById("vctl").innerHTML = `
+      <div class="timeline" id="tl"></div>
+      <button class="btn mark block" id="markBtn">● しるし</button>
+      <div id="markForm" hidden>
+        <label id="markAt"></label>
+        <input id="markText" placeholder="ひとことコメント">
+        <div class="chips">${MARK_PRESETS.map((p) => `<button class="chip" data-preset="${esc(p)}">${esc(p)}</button>`).join("")}</div>
+        <label>タグ(いくつでも)</label>
+        <div class="chips" id="markTags">${tags.map((t) => `<button class="chip" data-tag="${esc(t)}">${esc(t)}</button>`).join("")}</div>
+        <div class="row" style="margin-top:10px"><button class="btn sub grow" id="markCancel">やめる</button><button class="btn grow" id="markSave">付ける</button></div>
+      </div>`;
+    let pending = 0;
+    const form = document.getElementById("markForm"), text = document.getElementById("markText");
+    document.getElementById("markBtn").onclick = () => {
+      player.pause(); pending = player.time();
+      document.getElementById("markAt").textContent = `${fmt(pending)} の場面にコメント`;
+      form.hidden = false; text.value = "";
+      form.querySelectorAll("[data-tag]").forEach((b) => b.classList.remove("on"));
+      text.focus();
+    };
+    form.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => (text.value = b.dataset.preset)));
+    form.querySelectorAll("[data-tag]").forEach((b) => (b.onclick = () => b.classList.toggle("on")));
+    document.getElementById("markCancel").onclick = () => (form.hidden = true);
+    document.getElementById("markSave").onclick = async () => {
+      const sel = [...form.querySelectorAll("[data-tag].on")].map((b) => b.dataset.tag);
+      m.markers.push({ id: uid(), t: pending, text: text.value.trim() || "(コメントなし)", tags: sel });
+      m.markers.sort((a, b) => a.t - b.t);
+      await save(); form.hidden = true; drawMarkers(); toast("しるしを付けました");
+    };
+    player.onReady(drawTimeline);
   }
   function drawTimeline() {
-    const tl = document.getElementById("tl"); if (!tl || !video || !video.duration) return;
-    tl.innerHTML = m.markers.map((k) => `<i style="left:calc(${(k.t / video.duration) * 100}% - 2px)"></i>`).join("");
+    const tl = document.getElementById("tl"), d = player && player.duration(); if (!tl || !d) return;
+    tl.innerHTML = m.markers.map((k) => `<i style="left:calc(${(k.t / d) * 100}% - 2px)"></i>`).join("");
   }
   function drawMarkers() {
     document.getElementById("mcount").textContent = `しるし(${m.markers.length})`;
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
-      <div class="marker"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
-        <span class="grow">${esc(k.text)}</span><button class="chip" data-rm="${k.id}">削除</button></div>`).join("")
-      : `<span class="muted">${video ? "再生中に「● しるし」を押すと、その時間にマーカーが付きます" : "動画を登録すると、しるしを付けられます"}</span>`;
-    document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => { if (video) { video.currentTime = +b.dataset.t; video.play(); video.scrollIntoView({ behavior: "smooth", block: "center" }); } }));
+      <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
+        <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${esc(k.text)}
+          <br>${(k.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}<span class="muted" style="font-size:12px">${editingMarker === k.id ? "" : "タグ ✎"}</span></button>
+        <button class="chip" data-rm="${k.id}">削除</button>
+        ${editingMarker === k.id ? `<div class="chips" style="width:100%">${[...new Set([...tags, ...(k.tags || [])])].map((t) => `<button class="chip ${(k.tags || []).includes(t) ? "on" : ""}" data-kt="${esc(t)}">${esc(t)}</button>`).join("")}</div>` : ""}
+      </div>`).join("")
+      : `<span class="muted">${player ? "再生中に「● しるし」を押すと、その時間にマーカーが付きます" : "動画を登録すると、しるしを付けられます"}</span>`;
+    document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => { if (player) { player.seek(+b.dataset.t); player.el.scrollIntoView({ behavior: "smooth", block: "center" }); } }));
+    document.querySelectorAll("#mlist [data-edit]").forEach((b) => (b.onclick = () => { editingMarker = editingMarker === b.dataset.edit ? null : b.dataset.edit; drawMarkers(); }));
+    document.querySelectorAll("#mlist [data-kt]").forEach((b) => (b.onclick = async () => {
+      const k = m.markers.find((x) => x.id === editingMarker); k.tags ||= [];
+      const t = b.dataset.kt; k.tags = k.tags.includes(t) ? k.tags.filter((x) => x !== t) : [...k.tags, t];
+      await save(); drawMarkers();
+    }));
     document.querySelectorAll("#mlist [data-rm]").forEach((b) => (b.onclick = async () => {
       m.markers = m.markers.filter((k) => k.id !== b.dataset.rm); await save(); drawMarkers();
     }));
@@ -333,6 +368,82 @@ async function screenMatch(mid) {
   }
   drawMarkers();
 }
+
+// ---------- 動画プレイヤー(端末の動画 / YouTube 埋め込み) ----------
+function parseYouTube(u) {
+  u = (u || "").trim();
+  if (/^[\w-]{11}$/.test(u)) return u;
+  try {
+    const url = new URL(u);
+    const host = url.hostname.replace(/^(www\.|m\.|music\.)/, "");
+    if (host === "youtu.be") return url.pathname.slice(1, 12).match(/^[\w-]{11}$/)?.[0] || null;
+    if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      const v = url.searchParams.get("v"); if (v && /^[\w-]{11}$/.test(v)) return v;
+      const m = url.pathname.match(/^\/(?:shorts|live|embed|v)\/([\w-]{11})/); if (m) return m[1];
+    }
+  } catch {}
+  return null;
+}
+let ytApi = null;
+function loadYT() {
+  return ytApi ||= new Promise((res, rej) => {
+    if (window.YT && YT.Player) return res(YT);
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { prev && prev(); res(YT); };
+    const sc = document.createElement("script");
+    sc.src = "https://www.youtube.com/iframe_api";
+    sc.onerror = () => { ytApi = null; sc.remove(); rej(new Error("YouTube に接続できません")); };
+    document.head.appendChild(sc);
+    setTimeout(() => { if (!(window.YT && YT.Player)) { ytApi = null; rej(new Error("timeout")); } }, 15000);
+  });
+}
+// 戻り値: { el, time(), duration(), pause(), seek(t), onReady(fn) } または null
+async function mountPlayer(m, box) {
+  if (m.youtubeId) {
+    box.innerHTML = `<div class="yt"><div id="ytPlayer"></div></div>`;
+    try { await loadYT(); }
+    catch { box.innerHTML = `<p class="muted">YouTube を読み込めませんでした。通信できる場所で開き直してください。</p>`; return null; }
+    if (!document.getElementById("ytPlayer")) return null; // 画面が切り替わった
+    let ready = false; const cbs = [];
+    const yt = new YT.Player("ytPlayer", {
+      videoId: m.youtubeId,
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+      events: {
+        onReady: () => { ready = true; cbs.splice(0).forEach((f) => f()); },
+        onError: () => box.insertAdjacentHTML("beforeend", `<p class="muted">この動画は再生できません。YouTube 側で「限定公開」になっているか、埋め込みが許可されているか確認してください。</p>`),
+      },
+    });
+    return {
+      el: box,
+      time: () => (ready ? yt.getCurrentTime() : 0),
+      duration: () => (ready ? yt.getDuration() : 0),
+      pause: () => ready && yt.pauseVideo(),
+      seek: (t) => { if (ready) { yt.seekTo(t, true); yt.playVideo(); } },
+      onReady: (f) => (ready ? f() : cbs.push(f)),
+    };
+  }
+  if (m.videoId) {
+    const v = await get("videos", m.videoId);
+    if (!v) return null;
+    currentUrl = URL.createObjectURL(v.blob);
+    box.innerHTML = `<video src="${currentUrl}" controls playsinline preload="metadata"></video>`;
+    const video = box.querySelector("video");
+    return {
+      el: video,
+      time: () => video.currentTime,
+      duration: () => video.duration || 0,
+      pause: () => video.pause(),
+      seek: (t) => { video.currentTime = t; video.play(); },
+      onReady: (f) => (video.readyState >= 1 ? f() : video.addEventListener("loadedmetadata", f, { once: true })),
+    };
+  }
+  return null;
+}
+
+// ---------- タグ(自分で追加・編集できる) ----------
+const DEFAULT_TAGS = ["サーブ", "レシーブ", "3球目", "ラリー", "得点", "失点"];
+async function getTags() { const r = await get("settings", "tags"); return r ? r.list : DEFAULT_TAGS.slice(); }
+const setTags = (list) => put("settings", { id: "tags", list });
 
 // ---------- スコア入力(ゲームごとに「取った/落とした」+ 相手側の点をタップ) ----------
 // games: [{ win: true|false|null, lose: 負けた側の点数|null }]  勝った側の点 = lose>=10 ? lose+2 : 11
@@ -416,9 +527,8 @@ async function screenReview(mid) {
     </div>
     <div id="vwrap"></div>
     <h2>しるし一覧(タップでその場面へ)</h2>
-    <div class="card" id="mlist">${m.markers.length ? m.markers.map((k) => `
-      <div class="marker"><button class="time" data-t="${k.t}">${fmt(k.t)}</button><span class="grow">${esc(k.text)}</span>
-      <button class="chip" data-task="${esc(k.text)}">練習に追加</button></div>`).join("") : `<span class="muted">しるしはまだありません</span>`}</div>
+    <div class="chips" id="tagFilter" style="margin-bottom:8px"></div>
+    <div class="card" id="mlist"></div>
     <h2>次の練習で意識すること(一つだけ)</h2>
     <div class="card">
       <input id="nextFocus" maxlength="60" placeholder="例 サーブの後すぐ基本姿勢に戻る" value="${esc(m.nextFocus)}">
@@ -433,28 +543,35 @@ async function screenReview(mid) {
   for (const key of ["nextFocus", "bodyNote", "coachComment"]) {
     document.getElementById(key).oninput = (e) => { m[key] = e.target.value; clearTimeout(save.t); save.t = setTimeout(save, 400); };
   }
-  let video = null;
-  if (m.videoId) {
-    const v = await get("videos", m.videoId);
-    if (v) {
-      currentUrl = URL.createObjectURL(v.blob);
-      document.getElementById("vwrap").innerHTML = `<div class="card"><video id="video" src="${currentUrl}" controls playsinline preload="metadata"></video></div>`;
-      video = document.getElementById("video");
-    }
-  }
-  document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => {
-    if (!video) return toast("動画が登録されていません");
-    video.currentTime = +b.dataset.t; video.play(); video.scrollIntoView({ behavior: "smooth", block: "center" });
-  }));
+  const vw = document.getElementById("vwrap");
+  if (m.videoId || m.youtubeId) { vw.className = "card"; }
+  const player = await mountPlayer(m, vw);
+  const used = [...new Set(m.markers.flatMap((k) => k.tags || []))];
+  let filter = null;
+  const drawList = () => {
+    document.getElementById("tagFilter").innerHTML = used.length ? [`<button class="chip ${filter ? "" : "on"}" data-f="">すべて</button>`,
+      ...used.map((t) => `<button class="chip ${filter === t ? "on" : ""}" data-f="${esc(t)}">${esc(t)} ${m.markers.filter((k) => (k.tags || []).includes(t)).length}</button>`)].join("") : "";
+    const list = filter ? m.markers.filter((k) => (k.tags || []).includes(filter)) : m.markers;
+    document.getElementById("mlist").innerHTML = list.length ? list.map((k) => `
+      <div class="marker"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
+      <span class="grow">${esc(k.text)}${(k.tags || []).length ? "<br>" + k.tags.map((t) => `<span class="tag t">${esc(t)}</span>`).join("") : ""}</span>
+      <button class="chip" data-task="${esc(k.text)}">練習に追加</button></div>`).join("") : `<span class="muted">しるしはまだありません</span>`;
+    document.querySelectorAll("#tagFilter [data-f]").forEach((b) => (b.onclick = () => { filter = b.dataset.f || null; drawList(); }));
+    document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => {
+      if (!player) return toast("動画が登録されていません");
+      player.seek(+b.dataset.t); player.el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }));
+    document.querySelectorAll("#mlist [data-task]").forEach((b) => (b.onclick = () => addTask(b.dataset.task)));
+  };
   const addTask = async (text) => {
     if (!text.trim()) return toast("内容が空です");
     await put("tasks", { id: uid(), playerId: m.playerId, text: text.trim(), source: `${m.date} vs ${m.oppType || "相手"} の振り返りから`, matchId: m.id, done: false, created: Date.now() });
     toast("課題に追加しました(練習記録で使えます)");
   };
-  document.querySelectorAll("#mlist [data-task]").forEach((b) => (b.onclick = () => addTask(b.dataset.task)));
+  drawList();
   document.getElementById("focusTask").onclick = () => addTask(m.nextFocus || "");
   document.getElementById("delMatch").onclick = async () => {
-    if (!confirm("この試合記録と動画を削除します。よろしいですか?")) return;
+    if (!confirm("この試合記録と動画を削除します。よろしいですか?(YouTube 上の動画は消えません)")) return;
     if (m.videoId) await del("videos", m.videoId);
     await del("matches", m.id); location.hash = "#/p/" + m.playerId + "/matches";
   };
@@ -523,13 +640,29 @@ async function screenData() {
       <button class="btn sub block" id="imp">バックアップから復元</button>
       <input type="file" id="impFile" accept="application/json,.json" hidden>
     </div>
+    <h2>しるしのタグ</h2>
+    <div class="card">
+      <div class="chips" id="tagList"></div>
+      <div class="row" style="margin-top:10px"><input id="newTag" class="grow" maxlength="12" placeholder="新しいタグ(例 フォア前)"><button class="btn" id="addTag">追加</button></div>
+      <p class="muted" style="margin:6px 0 0">× で消しても、すでに付けたしるしのタグは残ります。</p>
+    </div>
     <p class="muted">ホーム画面に追加すると、アプリのように起動できます(iPhone: 共有 → ホーム画面に追加 / Android: メニュー → ホーム画面に追加)。</p>`;
+  let tags = await getTags();
+  const drawTags = () => {
+    document.getElementById("tagList").innerHTML = tags.map((t, i) => `<button class="chip" data-i="${i}">${esc(t)} ×</button>`).join("") || `<span class="muted">タグがありません</span>`;
+    document.querySelectorAll("#tagList [data-i]").forEach((b) => (b.onclick = async () => { tags.splice(+b.dataset.i, 1); await setTags(tags); drawTags(); }));
+  };
+  drawTags();
+  document.getElementById("addTag").onclick = async () => {
+    const el = document.getElementById("newTag"), t = el.value.trim();
+    if (!t || tags.includes(t)) return; tags.push(t); await setTags(tags); el.value = ""; drawTags();
+  };
   document.getElementById("persist").onclick = async () => {
     const ok = await navigator.storage?.persist?.(); toast(ok ? "固定されました" : "このブラウザでは固定できませんでした");
   };
   document.getElementById("exp").onclick = async () => {
     const data = { app: "ttcoach", version: 1, exported: new Date().toISOString() };
-    for (const s of ["players", "matches", "practices", "tasks"]) data[s] = await all(s);
+    for (const s of ["players", "matches", "practices", "tasks", "settings"]) data[s] = await all(s);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
     a.download = `ttcoach-backup-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -541,7 +674,7 @@ async function screenData() {
       const data = JSON.parse(await f.files[0].text());
       if (data.app !== "ttcoach") throw new Error("このアプリのバックアップではありません");
       if (!confirm("バックアップの内容を取り込みます(同じ記録は上書き)。よろしいですか?")) return;
-      for (const s of ["players", "matches", "practices", "tasks"]) for (const v of data[s] || []) await put(s, v);
+      for (const s of ["players", "matches", "practices", "tasks", "settings"]) for (const v of data[s] || []) await put(s, v);
       toast("復元しました"); location.hash = "#/";
     } catch (e) { alert("復元できませんでした: " + e.message); }
   };
