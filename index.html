@@ -93,6 +93,10 @@
   .kbtn { color: #fff; border: 0; border-radius: 10px; font-weight: 700; font-size: 17px; padding: 14px 4px; }
   .fskinds { position: absolute; right: calc(12px + env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
   .fskinds .fsb { position: static; border: 0; font-size: 17px; font-weight: 700; padding: 14px 16px; min-width: 96px; }
+  .tally { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tbox { border-radius: 10px; padding: 6px 4px 8px; text-align: center; background: var(--chip); border-top: 4px solid; }
+  .tbox b { display: block; font-size: 26px; line-height: 1.3; font-variant-numeric: tabular-nums; }
+  .tbox span { font-size: 13px; color: var(--muted); }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -218,8 +222,13 @@ async function screenPlayer(pid, tab = "matches") {
       <button class="list-item" data-go="#/r/${m.id}">
         <span class="grow"><b>${esc(m.date)}</b> vs ${esc(m.oppType || "相手")}
           ${m.result ? `<span class="tag ${m.result}">${m.result === "win" ? "勝ち" : "負け"}</span>` : ""}
-          <br><span class="muted">${esc(m.score || "")} ${m.videoId ? "🎥" : m.youtubeId ? "▶ YouTube" : ""} しるし ${(m.markers || []).length}件</span></span><span class="muted">›</span>
+          <br><span class="muted">${esc(m.score || "")} ${m.videoId ? "🎥" : m.youtubeId ? "▶ YouTube" : ""} ${(() => { const c = tallyKinds(m.markers); return `得点 ${c.point}・失点 ${c.lost}`; })()}</span></span><span class="muted">›</span>
       </button>`).join("") : `<div class="empty">試合の記録はまだありません</div>`;
+    if (ms.length) {
+      const c = tallyKinds(ms.flatMap((m) => m.markers || []));
+      const win = ms.filter((m) => m.result === "win").length, lose = ms.filter((m) => m.result === "lose").length;
+      body = `<div class="card"><div class="muted" style="margin-bottom:6px">全 ${ms.length} 試合の合計(${win}勝 ${lose}敗)</div>${tallyHTML(c, null)}</div>` + body;
+    }
     body += `<button class="btn fab" id="add">+ 試合</button>`;
   } else if (tab === "practices") {
     body = ps.length ? ps.map((x) => `
@@ -300,6 +309,7 @@ async function screenMatch(mid) {
       <p class="muted" style="margin:8px 0 0">${m.youtubeId ? "YouTube の動画をアプリの中で再生しています(動画ファイルは保存しません)。" : "端末の動画はこの端末の中だけに保存され、外部にアップロードされません。"}</p>
     </div>
     <h2 id="mcount">しるし(${m.markers.length})</h2>
+    <div class="card" id="tally"></div>
     <div class="card" id="mlist"></div>
     <button class="btn block" data-go="#/r/${m.id}">振り返りへ ›</button>`;
   bindGo();
@@ -351,7 +361,7 @@ async function screenMatch(mid) {
     const form = document.getElementById("markForm"), text = document.getElementById("markText");
     document.querySelectorAll("#vctl [data-kind]").forEach((b) => (b.onclick = async () => {
       const kind = b.dataset.kind, t = player.time();
-      if (kind !== "note") { await addMarker(t, "", [], kind); drawMarkers(); return toast(`${fmt(t)} ${KINDS[kind].label}`); }
+      if (kind !== "note") { await addMarker(t, "", [], kind); drawMarkers(); const c = tallyKinds(m.markers); return toast(`${fmt(t)} ${KINDS[kind].label}(得点 ${c.point}・失点 ${c.lost})`); }
       player.pause(); pending = t;
       document.getElementById("markAt").textContent = `${fmt(pending)} その他(気になったこと)`;
       form.hidden = false; text.value = "";
@@ -391,7 +401,8 @@ async function screenMatch(mid) {
       </div>`;
     document.body.appendChild(bar);
     const sheet = bar.querySelector("#fsSheet"), txt = bar.querySelector("#fsText");
-    const count = () => (bar.querySelector("#fsCount").textContent = KIND_KEYS.map((kk) => `${KINDS[kk].label} ${m.markers.filter((k) => markKind(k) === kk).length}`).join(" / "));
+    const count = () => { const c = tallyKinds(m.markers), r = pointRate(c);
+      bar.querySelector("#fsCount").textContent = `得点 ${c.point} ・ 失点 ${c.lost}${r != null ? `(${r}%)` : ""} ・ その他 ${c.note}`; };
     count();
     let at = 0;
     bar.querySelector("#fsExit").onclick = () => {
@@ -426,6 +437,7 @@ async function screenMatch(mid) {
   }
   function drawMarkers() {
     document.getElementById("mcount").textContent = `しるし(${m.markers.length})`;
+    document.getElementById("tally").innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
       <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
         <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${kindBadge(markKind(k))}${esc(markLabel(k))}
@@ -544,6 +556,18 @@ function markKind(k) {
   return tg.includes("得点") ? "point" : tg.includes("失点") ? "lost" : "note";
 }
 const markLabel = (k) => (k.text && k.text !== "(コメントなし)" ? k.text : "");
+function tallyKinds(markers) { const c = { point: 0, lost: 0, note: 0 }; (markers || []).forEach((k) => c[markKind(k)]++); return c; }
+const pointRate = (c) => (c.point + c.lost ? Math.round((c.point / (c.point + c.lost)) * 100) : null);
+function scorePoints(m) { // ゲームスコアから合計した得点・失点
+  let me = 0, opp = 0, n = 0;
+  for (const g of m.games || []) { const pt = gamePts(g); if (pt) { me += pt[0]; opp += pt[1]; n++; } }
+  return n ? { me, opp } : null;
+}
+function tallyHTML(c, sp) {
+  const rate = pointRate(c);
+  return `<div class="tally">${KIND_KEYS.map((kk) => `<div class="tbox" style="border-top-color:${KINDS[kk].color}"><b>${c[kk]}</b><span>${KINDS[kk].icon} ${KINDS[kk].label}</span></div>`).join("")}</div>
+    <div class="muted" style="margin-top:6px">${rate != null ? `得点率 <b style="color:var(--ink)">${rate}%</b>(得点 ÷ 得点と失点の合計)` : "得点・失点のしるしはまだありません"}${sp ? `<br>スコアからの合計:得点 ${sp.me}・失点 ${sp.opp}(しるしを付けたのは 得点 ${c.point}/${sp.me}・失点 ${c.lost}/${sp.opp})` : ""}</div>`;
+}
 const kindBadge = (kind) => `<span class="kb" style="background:${KINDS[kind].color}">${KINDS[kind].icon} ${KINDS[kind].label}</span>`;
 async function getTags() { const r = await get("settings", "tags"); return r ? r.list : DEFAULT_TAGS.slice(); }
 const setTags = (list) => put("settings", { id: "tags", list });
@@ -602,6 +626,7 @@ function drawScore(m, save) {
     const last = m.games[m.games.length - 1];
     if (autoNext && gamePts(last) && Math.max(w2, l2) < 3) m.games.push({ win: null, lose: null });
     save(); drawScore(m, save);
+    const tl = document.getElementById("tally"); if (tl) tl.innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
   };
   box.querySelectorAll("[data-g]").forEach((row) => {
     const g = m.games[+row.dataset.g];
@@ -628,6 +653,7 @@ async function screenReview(mid) {
         <span class="muted">${esc(m.score || "")}</span></div>
       <button class="btn sub" data-go="#/m/${m.id}">編集・しるし</button>
     </div>
+    <div class="card">${tallyHTML(tallyKinds(m.markers), scorePoints(m))}</div>
     <div id="vwrap"></div>
     <h2>しるし一覧(タップでその場面へ)</h2>
     <div class="chips" id="tagFilter" style="margin-bottom:8px"></div>
