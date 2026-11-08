@@ -82,7 +82,6 @@
   #fsCount { top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right)); pointer-events: none; }
   .fsctl { position: absolute; left: calc(10px + env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
   .fsctl .fsb { position: static; min-width: 64px; }
-  #fsMark { right: calc(14px + env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); background: rgba(225,29,72,.88); border: 0; font-size: 18px; font-weight: 700; padding: 20px 18px; }
   .fssheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78dvh; overflow: auto; background: rgba(20,24,28,.94); color: #fff;
     padding: 12px calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); border-radius: 14px 14px 0 0; }
   .fssheet .chip { background: rgba(255,255,255,.1); color: #fff; border-color: rgba(255,255,255,.25); }
@@ -90,6 +89,10 @@
   .fssheet input { background: rgba(255,255,255,.08); color: #fff; border-color: rgba(255,255,255,.25); }
   .fssheet .btn.sub { background: rgba(255,255,255,.15); color: #fff; }
   .toast { z-index: 60; }
+  .kb { display: inline-block; color: #fff; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; margin-right: 6px; white-space: nowrap; }
+  .kbtn { color: #fff; border: 0; border-radius: 10px; font-weight: 700; font-size: 17px; padding: 14px 4px; }
+  .fskinds { position: absolute; right: calc(12px + env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
+  .fskinds .fsb { position: static; border: 0; font-size: 17px; font-weight: 700; padding: 14px 16px; min-width: 96px; }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -333,9 +336,9 @@ async function screenMatch(mid) {
     document.getElementById("vctl").innerHTML = `
       <div class="timeline" id="tl"></div>
       <div class="row" style="margin-top:12px">
-        <button class="btn mark grow" id="markBtn" style="margin:0">● しるし</button>
-        <button class="btn sub" id="fullBtn" style="padding:12px">⛶ 全画面でしるし</button>
+        ${KIND_KEYS.map((kk) => `<button class="kbtn grow" data-kind="${kk}" style="background:${KINDS[kk].color}">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}
       </div>
+      <button class="btn sub block" id="fullBtn" style="margin-top:8px">⛶ 全画面でしるし</button>
       <div id="markForm" hidden>
         <label id="markAt"></label>
         <input id="markText" placeholder="ひとことコメント">
@@ -346,25 +349,27 @@ async function screenMatch(mid) {
       </div>`;
     let pending = 0;
     const form = document.getElementById("markForm"), text = document.getElementById("markText");
-    document.getElementById("markBtn").onclick = () => {
-      player.pause(); pending = player.time();
-      document.getElementById("markAt").textContent = `${fmt(pending)} の場面にコメント`;
+    document.querySelectorAll("#vctl [data-kind]").forEach((b) => (b.onclick = async () => {
+      const kind = b.dataset.kind, t = player.time();
+      if (kind !== "note") { await addMarker(t, "", [], kind); drawMarkers(); return toast(`${fmt(t)} ${KINDS[kind].label}`); }
+      player.pause(); pending = t;
+      document.getElementById("markAt").textContent = `${fmt(pending)} その他(気になったこと)`;
       form.hidden = false; text.value = "";
       form.querySelectorAll("[data-tag]").forEach((b) => b.classList.remove("on"));
       text.focus();
-    };
+    }));
     form.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => (text.value = b.dataset.preset)));
     form.querySelectorAll("[data-tag]").forEach((b) => (b.onclick = () => b.classList.toggle("on")));
     document.getElementById("markCancel").onclick = () => (form.hidden = true);
     document.getElementById("markSave").onclick = async () => {
       const sel = [...form.querySelectorAll("[data-tag].on")].map((b) => b.dataset.tag);
-      await addMarker(pending, text.value, sel); form.hidden = true; drawMarkers(); toast("しるしを付けました");
+      await addMarker(pending, text.value, sel, "note"); form.hidden = true; drawMarkers(); toast("しるしを付けました");
     };
     document.getElementById("fullBtn").onclick = enterFull;
     player.onReady(drawTimeline);
   }
-  async function addMarker(t, txt, tg) {
-    m.markers.push({ id: uid(), t, text: (txt || "").trim() || "(コメントなし)", tags: tg });
+  async function addMarker(t, txt, tg, kind) {
+    m.markers.push({ id: uid(), t, kind, text: (txt || "").trim(), tags: tg });
     m.markers.sort((a, b) => a.t - b.t);
     await save();
   }
@@ -377,7 +382,7 @@ async function screenMatch(mid) {
       <button class="fsb" id="fsExit">× 終了</button>
       <span class="fsb" id="fsCount"></span>
       <div class="fsctl"><button class="fsb" data-j="-5">−5秒</button><button class="fsb" id="fsPlay">⏯</button><button class="fsb" data-j="5">+5秒</button></div>
-      <button class="fsb" id="fsMark">● しるし</button>
+      <div class="fskinds">${KIND_KEYS.map((kk) => `<button class="fsb" data-kind="${kk}" style="background:${KINDS[kk].color}e6">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}</div>
       <div class="fssheet" id="fsSheet" hidden>
         <div class="row"><b id="fsAt" class="grow"></b><button class="btn sub" id="fsCancel">やめる</button><button class="btn" id="fsSave">付ける</button></div>
         <div class="chips">${MARK_PRESETS.map((p) => `<button class="chip" data-preset="${esc(p)}">${esc(p)}</button>`).join("")}</div>
@@ -386,7 +391,7 @@ async function screenMatch(mid) {
       </div>`;
     document.body.appendChild(bar);
     const sheet = bar.querySelector("#fsSheet"), txt = bar.querySelector("#fsText");
-    const count = () => (bar.querySelector("#fsCount").textContent = `しるし ${m.markers.length}`);
+    const count = () => (bar.querySelector("#fsCount").textContent = KIND_KEYS.map((kk) => `${KINDS[kk].label} ${m.markers.filter((k) => markKind(k) === kk).length}`).join(" / "));
     count();
     let at = 0;
     bar.querySelector("#fsExit").onclick = () => {
@@ -394,12 +399,14 @@ async function screenMatch(mid) {
     };
     bar.querySelectorAll("[data-j]").forEach((b) => (b.onclick = () => player.jump(+b.dataset.j)));
     bar.querySelector("#fsPlay").onclick = () => (player.paused() ? player.play() : player.pause());
-    bar.querySelector("#fsMark").onclick = () => {
-      player.pause(); at = player.time();
-      bar.querySelector("#fsAt").textContent = `${fmt(at)} の場面`;
+    bar.querySelectorAll(".fskinds [data-kind]").forEach((b) => (b.onclick = async () => {
+      const kind = b.dataset.kind, t = player.time();
+      if (kind !== "note") { await addMarker(t, "", [], kind); count(); return toast(`${fmt(t)} ${KINDS[kind].label}`); }
+      player.pause(); at = t;
+      bar.querySelector("#fsAt").textContent = `${fmt(at)} その他`;
       txt.value = ""; sheet.querySelectorAll(".chip.on").forEach((c) => c.classList.remove("on"));
       sheet.hidden = false;
-    };
+    }));
     sheet.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => {
       const on = !b.classList.contains("on");
       sheet.querySelectorAll("[data-preset]").forEach((c) => c.classList.remove("on"));
@@ -409,24 +416,27 @@ async function screenMatch(mid) {
     bar.querySelector("#fsCancel").onclick = () => { sheet.hidden = true; player.play(); };
     bar.querySelector("#fsSave").onclick = async () => {
       const sel = [...sheet.querySelectorAll("[data-tag].on")].map((b) => b.dataset.tag);
-      await addMarker(at, txt.value, sel);
+      await addMarker(at, txt.value, sel, "note");
       sheet.hidden = true; count(); toast(`${fmt(at)} にしるしを付けました`); player.play();
     };
   }
   function drawTimeline() {
     const tl = document.getElementById("tl"), d = player && player.duration(); if (!tl || !d) return;
-    tl.innerHTML = m.markers.map((k) => `<i style="left:calc(${(k.t / d) * 100}% - 2px)"></i>`).join("");
+    tl.innerHTML = m.markers.map((k) => `<i style="left:calc(${(k.t / d) * 100}% - 2px);background:${KINDS[markKind(k)].color}"></i>`).join("");
   }
   function drawMarkers() {
     document.getElementById("mcount").textContent = `しるし(${m.markers.length})`;
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
       <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
-        <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${esc(k.text)}
-          <br>${(k.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}<span class="muted" style="font-size:12px">${editingMarker === k.id ? "" : "タグ ✎"}</span></button>
+        <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${kindBadge(markKind(k))}${esc(markLabel(k))}
+          <br>${(k.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}<span class="muted" style="font-size:12px">${editingMarker === k.id ? "" : "編集 ✎"}</span></button>
         <button class="chip" data-rm="${k.id}">削除</button>
-        ${editingMarker === k.id ? `<div class="chips" style="width:100%">${[...new Set([...tags, ...(k.tags || [])])].map((t) => `<button class="chip ${(k.tags || []).includes(t) ? "on" : ""}" data-kt="${esc(t)}">${esc(t)}</button>`).join("")}</div>` : ""}
+        ${editingMarker === k.id ? `<div style="width:100%;margin-top:6px">
+          <div class="chips">${KIND_KEYS.map((kk) => `<button class="chip ${markKind(k) === kk ? "on" : ""}" data-kk="${kk}">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}</div>
+          <div class="row" style="margin-top:6px"><input class="grow" id="kText" placeholder="ひとこと" value="${esc(markLabel(k))}"><button class="chip" id="kTextSave">保存</button></div>
+          <div class="chips">${[...new Set([...tags, ...(k.tags || [])])].map((t) => `<button class="chip ${(k.tags || []).includes(t) ? "on" : ""}" data-kt="${esc(t)}">${esc(t)}</button>`).join("")}</div></div>` : ""}
       </div>`).join("")
-      : `<span class="muted">${player ? "再生中に「● しるし」を押すと、その時間にマーカーが付きます" : "動画を登録すると、しるしを付けられます"}</span>`;
+      : `<span class="muted">${player ? "再生中に「得点」「失点」「その他」を押すと、その時間にしるしが付きます" : "動画を登録すると、しるしを付けられます"}</span>`;
     document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => { if (player) { player.seek(+b.dataset.t); player.el.scrollIntoView({ behavior: "smooth", block: "center" }); } }));
     document.querySelectorAll("#mlist [data-edit]").forEach((b) => (b.onclick = () => { editingMarker = editingMarker === b.dataset.edit ? null : b.dataset.edit; drawMarkers(); }));
     document.querySelectorAll("#mlist [data-kt]").forEach((b) => (b.onclick = async () => {
@@ -434,6 +444,10 @@ async function screenMatch(mid) {
       const t = b.dataset.kt; k.tags = k.tags.includes(t) ? k.tags.filter((x) => x !== t) : [...k.tags, t];
       await save(); drawMarkers();
     }));
+    const cur = () => m.markers.find((x) => x.id === editingMarker);
+    document.querySelectorAll("#mlist [data-kk]").forEach((b) => (b.onclick = async () => { cur().kind = b.dataset.kk; await save(); drawMarkers(); }));
+    const ks = document.getElementById("kTextSave");
+    if (ks) ks.onclick = async () => { cur().text = document.getElementById("kText").value.trim(); await save(); toast("保存しました"); drawMarkers(); };
     document.querySelectorAll("#mlist [data-rm]").forEach((b) => (b.onclick = async () => {
       m.markers = m.markers.filter((k) => k.id !== b.dataset.rm); await save(); drawMarkers();
     }));
@@ -520,7 +534,17 @@ async function mountPlayer(m, box) {
 }
 
 // ---------- タグ(自分で追加・編集できる) ----------
-const DEFAULT_TAGS = ["サーブ", "レシーブ", "3球目", "ラリー", "得点", "失点"];
+const DEFAULT_TAGS = ["サーブ", "レシーブ", "3球目", "ラリー", "フォア", "バック"];
+// ---------- しるしの種類(得点・失点・その他) ----------
+const KINDS = { point: { label: "得点", icon: "○", color: "#16a34a" }, lost: { label: "失点", icon: "✕", color: "#e11d48" }, note: { label: "その他", icon: "△", color: "#d97706" } };
+const KIND_KEYS = ["point", "lost", "note"];
+function markKind(k) {
+  if (KINDS[k.kind]) return k.kind;
+  const tg = k.tags || [];
+  return tg.includes("得点") ? "point" : tg.includes("失点") ? "lost" : "note";
+}
+const markLabel = (k) => (k.text && k.text !== "(コメントなし)" ? k.text : "");
+const kindBadge = (kind) => `<span class="kb" style="background:${KINDS[kind].color}">${KINDS[kind].icon} ${KINDS[kind].label}</span>`;
 async function getTags() { const r = await get("settings", "tags"); return r ? r.list : DEFAULT_TAGS.slice(); }
 const setTags = (list) => put("settings", { id: "tags", list });
 
@@ -628,13 +652,15 @@ async function screenReview(mid) {
   const used = [...new Set(m.markers.flatMap((k) => k.tags || []))];
   let filter = null;
   const drawList = () => {
-    document.getElementById("tagFilter").innerHTML = used.length ? [`<button class="chip ${filter ? "" : "on"}" data-f="">すべて</button>`,
-      ...used.map((t) => `<button class="chip ${filter === t ? "on" : ""}" data-f="${esc(t)}">${esc(t)} ${m.markers.filter((k) => (k.tags || []).includes(t)).length}</button>`)].join("") : "";
-    const list = filter ? m.markers.filter((k) => (k.tags || []).includes(filter)) : m.markers;
+    const kindCount = (kk) => m.markers.filter((k) => markKind(k) === kk).length;
+    document.getElementById("tagFilter").innerHTML = m.markers.length ? [`<button class="chip ${filter ? "" : "on"}" data-f="">すべて</button>`,
+      ...KIND_KEYS.filter((kk) => kindCount(kk)).map((kk) => `<button class="chip ${filter === "k:" + kk ? "on" : ""}" data-f="k:${kk}">${KINDS[kk].icon} ${KINDS[kk].label} ${kindCount(kk)}</button>`),
+      ...used.map((t) => `<button class="chip ${filter === t ? "on" : ""}" data-f="${esc(t)}">#${esc(t)} ${m.markers.filter((k) => (k.tags || []).includes(t)).length}</button>`)].join("") : "";
+    const list = !filter ? m.markers : filter.startsWith("k:") ? m.markers.filter((k) => markKind(k) === filter.slice(2)) : m.markers.filter((k) => (k.tags || []).includes(filter));
     document.getElementById("mlist").innerHTML = list.length ? list.map((k) => `
       <div class="marker"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
-      <span class="grow">${esc(k.text)}${(k.tags || []).length ? "<br>" + k.tags.map((t) => `<span class="tag t">${esc(t)}</span>`).join("") : ""}</span>
-      <button class="chip" data-task="${esc(k.text)}">練習に追加</button></div>`).join("") : `<span class="muted">しるしはまだありません</span>`;
+      <span class="grow">${kindBadge(markKind(k))}${esc(markLabel(k))}${(k.tags || []).length ? "<br>" + k.tags.map((t) => `<span class="tag t">${esc(t)}</span>`).join("") : ""}</span>
+      <button class="chip" data-task="${esc(markLabel(k) || `${KINDS[markKind(k)].label}の場面(${fmt(k.t)})`)}">練習に追加</button></div>`).join("") : `<span class="muted">しるしはまだありません</span>`;
     document.querySelectorAll("#tagFilter [data-f]").forEach((b) => (b.onclick = () => { filter = b.dataset.f || null; drawList(); }));
     document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => {
       if (!player) return toast("動画が登録されていません");
