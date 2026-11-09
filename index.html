@@ -111,6 +111,13 @@
   .tbox { border-radius: 10px; padding: 6px 4px 8px; text-align: center; background: var(--chip); border-top: 4px solid; }
   .tbox b { display: block; font-size: 26px; line-height: 1.3; font-variant-numeric: tabular-nums; }
   .tbox span { font-size: 13px; color: var(--muted); }
+  #rallyPanel { position: fixed; inset: 0; z-index: 70; background: var(--bg); overflow: auto; padding: calc(12px + env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom)); }
+  #rallyPanel video { max-height: 34vh; }
+  .rbar { position: relative; height: 22px; background: var(--line); border-radius: 6px; overflow: hidden; margin: 8px 0; }
+  .rbar i { position: absolute; top: 0; bottom: 0; background: var(--accent); opacity: .8; }
+  .rbar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--mark); }
+  .prog { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; } .prog i { display: block; height: 100%; background: var(--accent); width: 0; }
+  input[type=range] { padding: 0; border: 0; background: none; }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -322,6 +329,7 @@ async function screenMatch(mid) {
         <p class="muted" style="margin:6px 0 0">「非公開」の動画は再生できません。YouTube 側で「限定公開」にしてください。</p>
       </div>
       <p class="muted" style="margin:8px 0 0">${m.youtubeId ? "YouTube の動画をアプリの中で再生しています(動画ファイルは保存しません)。" : "端末の動画はこの端末の中だけに保存され、外部にアップロードされません。"}</p>
+      <button class="btn sub block" id="rallyBtn">🔊 ラリーの区切りを自動検出(テスト版)</button>
     </div>
     <h2 id="mcount">しるし(${m.markers.length})</h2>
     <div class="card" id="tally"></div>
@@ -355,6 +363,10 @@ async function screenMatch(mid) {
   };
 
   const tags = await getTags();
+  document.getElementById("rallyBtn").onclick = () => openRallyTest(m, save, async (ends) => {
+    for (const t of ends) m.markers.push({ id: uid(), t, kind: "note", text: "ラリー終わり(自動)", tags: [] });
+    m.markers.sort((a, b) => a.t - b.t); await save(); drawMarkers();
+  });
   const player = await mountPlayer(m, document.getElementById("vwrap"));
   let editingMarker = null;
   if (player) {
@@ -492,6 +504,183 @@ async function screenMatch(mid) {
     drawTimeline();
   }
   drawMarkers();
+}
+
+// ---------- ラリーの区切りの自動検出(テスト版) ----------
+// 動画の音を再生しながら聞き取り、高い音(打球音・台でのバウンド音)の大きさの変化を記録する。
+// 打球音が「区切りの秒数」以上とぎれたところを、ラリーの終わりとみなす。動画ファイルも音も保存・送信しない。
+function detectRallies(env, opt) {
+  const { t, L } = env, n = t.length; if (n < 10) return { hits: [], rallies: [] };
+  // 雑音の基準:前後 1.5 秒の下から 30% の大きさ
+  const floor = new Float32Array(n), step = 20;
+  for (let i = 0; i < n; i += step) {
+    let a = i, b = i; while (a > 0 && t[i] - t[a - 1] < 1.5) a--; while (b < n - 1 && t[b + 1] - t[i] < 1.5) b++;
+    const w = Array.from(L.subarray(a, b + 1)).sort((x, y) => x - y);
+    const f = w[Math.floor(w.length * 0.3)];
+    for (let j = i; j < Math.min(n, i + step); j++) floor[j] = f;
+  }
+  const hits = []; let last = -1;
+  for (let i = 1; i < n - 1; i++) {
+    const d = L[i] - floor[i];
+    if (d < opt.sens || L[i] < L[i - 1] || L[i] < L[i + 1]) continue;
+    if (last >= 0 && t[i] - last < 0.1) continue;
+    hits.push(t[i]); last = t[i];
+  }
+  const rallies = []; let cur = null;
+  for (const h of hits) {
+    if (cur && h - cur.end <= opt.gap) { cur.end = h; cur.n++; }
+    else { if (cur) rallies.push(cur); cur = { start: h, end: h, n: 1 }; }
+  }
+  if (cur) rallies.push(cur);
+  return { hits, rallies: rallies.filter((r) => r.n >= opt.minHits) };
+}
+function openRallyTest(m, save, addMarks) {
+  const st = m.rallyTest || {};
+  const opt = { sens: st.sens ?? 12, gap: st.gap ?? 2.5, minHits: st.minHits ?? 3, rate: 2 };
+  let env = null, res = null, verdict = st.verdict || {}, missed = st.missed || [], url = null, runId = 0;
+  const panel = document.createElement("div"); panel.id = "rallyPanel";
+  document.body.appendChild(panel); document.body.classList.add("noscroll");
+  const close = () => { runId++; if (url) URL.revokeObjectURL(url); panel.remove(); document.body.classList.remove("noscroll"); };
+  window.addEventListener("hashchange", close, { once: true });
+  panel.innerHTML = `
+    <div class="row"><b class="grow" style="font-size:17px">ラリーの区切りの自動検出(テスト版)</b><button class="btn sub" id="rClose">閉じる</button></div>
+    <p class="muted">動画の音から、打球音が途切れたところを「ラリーの終わり」として探します。動画を${opt.rate}倍速で最後まで再生しながら調べるので、試合の長さの半分くらいの時間がかかります。そのあいだ画面を消さずに、このページを開いたままにしてください。</p>
+    <div class="card">
+      <div id="rSrc"></div>
+      <input type="file" id="rFile" accept="video/*" hidden>
+      <div id="rVid" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:8px"><span class="muted">速さ</span>
+        ${[1, 2].map((r) => `<button class="chip ${opt.rate === r ? "on" : ""}" data-rate="${r}">${r}倍速</button>`).join("")}
+        <span class="grow"></span><button class="btn" id="rStart" disabled>検出スタート</button></div>
+      <div class="prog" style="margin-top:10px"><i id="rProg"></i></div>
+      <div class="muted" id="rStat" style="margin-top:4px"></div>
+    </div>
+    <div id="rResult"></div>`;
+  panel.querySelector("#rClose").onclick = close;
+  const srcBox = panel.querySelector("#rSrc"), vidBox = panel.querySelector("#rVid"), file = panel.querySelector("#rFile");
+  let video = null;
+  const setVideo = (blob, label) => {
+    if (url) URL.revokeObjectURL(url);
+    url = URL.createObjectURL(blob);
+    vidBox.innerHTML = `<video src="${url}" controls playsinline preload="metadata"></video>`;
+    video = vidBox.querySelector("video");
+    srcBox.innerHTML = `<span class="muted">${esc(label)}</span> <button class="chip" id="rPick">別の動画を選ぶ</button>`;
+    srcBox.querySelector("#rPick").onclick = () => file.click();
+    panel.querySelector("#rStart").disabled = false;
+  };
+  srcBox.innerHTML = `<button class="btn sub block" id="rPick">スマホの動画を選ぶ</button>
+    <p class="muted" style="margin:6px 0 0">${m.youtubeId ? "YouTube の動画は音を読み取れないため、YouTube に上げたのと同じ元の動画をスマホから選んでください。調べるだけで保存はしません。" : "この試合の動画、または調べたい動画を選んでください。"}</p>`;
+  srcBox.querySelector("#rPick").onclick = () => file.click();
+  file.onchange = () => { const f = file.files[0]; if (f) setVideo(f, `選んだ動画:${f.name}`); };
+  if (m.videoId) get("videos", m.videoId).then((v) => v && setVideo(v.blob, "この試合に保存している動画"));
+  panel.querySelectorAll("[data-rate]").forEach((b) => (b.onclick = () => {
+    opt.rate = +b.dataset.rate; panel.querySelectorAll("[data-rate]").forEach((c) => c.classList.toggle("on", c === b));
+  }));
+
+  panel.querySelector("#rStart").onclick = async () => {
+    const my = ++runId, startBtn = panel.querySelector("#rStart"), stat = panel.querySelector("#rStat"), prog = panel.querySelector("#rProg");
+    startBtn.disabled = true;
+    // iPhone では、ボタンを押したその場で音の処理を始める必要がある
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC(); await ac.resume().catch(() => {});
+    let srcNode;
+    try { srcNode = ac.createMediaElementSource(video); }
+    catch (e) { stat.textContent = "この動画は検出に使えません。もう一度動画を選び直してください。"; return; }
+    const hp1 = ac.createBiquadFilter(); hp1.type = "highpass"; hp1.frequency.value = 2000;
+    const hp2 = ac.createBiquadFilter(); hp2.type = "highpass"; hp2.frequency.value = 2000;
+    const proc = ac.createScriptProcessor(2048, 1, 1), mute = ac.createGain(); mute.gain.value = 0;
+    srcNode.connect(hp1); hp1.connect(hp2); hp2.connect(proc); proc.connect(mute); mute.connect(ac.destination);
+    const T = [], E = [], BLK = 256;
+    proc.onaudioprocess = (ev) => {
+      if (video.paused) return;
+      const x = ev.inputBuffer.getChannelData(0), now = video.currentTime, sr = ac.sampleRate, nb = x.length / BLK;
+      for (let b = 0; b < nb; b++) {
+        let e = 0; for (let i = b * BLK; i < (b + 1) * BLK; i++) e += x[i] * x[i];
+        T.push(now - ((nb - b) * BLK / sr) * video.playbackRate); E.push(10 * Math.log10(e / BLK + 1e-12));
+      }
+    };
+    // 倍速でも打球音の形が崩れないよう、音程を保つ処理(時間伸縮)を切る
+    video.preservesPitch = false; video.webkitPreservesPitch = false; video.mozPreservesPitch = false;
+    video.currentTime = 0; video.playbackRate = opt.rate; video.muted = false; video.volume = 1;
+    const started = Date.now();
+    try { await video.play(); } catch (e) { stat.textContent = "再生できませんでした。もう一度「検出スタート」を押してください。"; startBtn.disabled = false; ac.close(); return; }
+    video.playbackRate = opt.rate;
+    await new Promise((resolve) => {
+      const tick = () => {
+        if (my !== runId) return resolve();
+        const d = video.duration || 1, p = Math.min(1, video.currentTime / d);
+        prog.style.width = (p * 100).toFixed(1) + "%";
+        const el = (Date.now() - started) / 1000, left = p > 0.01 ? el / p - el : 0;
+        stat.textContent = `調べています ${fmt(video.currentTime)} / ${fmt(d)}${left ? `(残り 約${Math.ceil(left / 60)}分)` : ""}`;
+        if (video.ended || p >= 0.999) return resolve();
+        if (video.paused && !video.ended) stat.textContent += " — 一時停止中。再生ボタンで続きから調べます";
+        setTimeout(tick, 500);
+      };
+      tick();
+    });
+    proc.onaudioprocess = null; ac.close();
+    if (my !== runId) return;
+    video.pause(); video.playbackRate = 1;
+    // 時刻順に並べ直す
+    const idx = T.map((_, i) => i).sort((a, b) => T[a] - T[b]);
+    env = { t: Float64Array.from(idx.map((i) => T[i])), L: Float32Array.from(idx.map((i) => E[i])) };
+    stat.textContent = `完了(${Math.round((Date.now() - started) / 1000)}秒)`;
+    startBtn.disabled = false; startBtn.textContent = "もう一度検出";
+    verdict = {}; missed = [];
+    run();
+  };
+
+  function persist() {
+    m.rallyTest = { sens: opt.sens, gap: opt.gap, minHits: opt.minHits, ends: res ? res.rallies.map((r) => +r.end.toFixed(2)) : [], verdict, missed, at: Date.now() };
+    save();
+  }
+  function run() { res = detectRallies(env, opt); persist(); draw(); }
+  function draw() {
+    const box = panel.querySelector("#rResult");
+    if (!res) return;
+    const d = (video && video.duration) || (env.t[env.t.length - 1] || 1);
+    const R = res.rallies, ok = R.filter((_, i) => verdict[i] === true).length, ng = R.filter((_, i) => verdict[i] === false).length;
+    const sp = scorePoints(m), total = sp ? sp.me + sp.opp : null;
+    box.innerHTML = `
+      <h2>結果:ラリー ${R.length} 本</h2>
+      <div class="card">
+        ${total != null ? `<div>スコアからの合計ポイント数:<b>${total}</b>(検出 ${R.length} 本、差 ${R.length - total >= 0 ? "+" : ""}${R.length - total})</div>` : `<div class="muted">スコアを入れておくと、実際のポイント数と比べられます</div>`}
+        <div class="rbar">${R.map((r) => `<i style="left:${(r.start / d) * 100}%;width:${Math.max(0.3, ((r.end - r.start) / d) * 100)}%"></i>`).join("")}${missed.map((t) => `<b style="left:${(t / d) * 100}%"></b>`).join("")}</div>
+        <div class="muted" style="font-size:13px">緑の帯が検出したラリー、赤い線が見逃しとして足したところ</div>
+        <label>感度 <b>${opt.sens}</b>(小さいほど小さな音も拾う)</label><input type="range" id="rSens" min="6" max="24" step="1" value="${opt.sens}">
+        <label>区切りの秒数 <b>${opt.gap}</b> 秒(打球音がこれ以上とぎれたら区切る)</label><input type="range" id="rGap" min="1.5" max="5" step="0.5" value="${opt.gap}">
+        <label>1本と数える最少の音の数 <b>${opt.minHits}</b></label><input type="range" id="rMin" min="2" max="6" step="1" value="${opt.minHits}">
+      </div>
+      <h2>確かめる(▶でそのラリーを再生)</h2>
+      <div class="card">
+        <div>確認済み:正しい <b>${ok}</b>・違う <b>${ng}</b>・見逃し <b>${missed.length}</b>
+          ${ok + ng ? ` → 正しく区切れた割合 <b>${Math.round((ok / (ok + ng)) * 100)}%</b>` : ""}${ok + missed.length ? `・見逃し率 <b>${Math.round((missed.length / (ok + missed.length)) * 100)}%</b>` : ""}</div>
+        <button class="btn sub block" id="rMiss">いまの再生位置を「見逃し」として足す</button>
+        ${R.map((r, i) => `<div class="marker"><button class="time" data-play="${i}">▶ ${fmt(r.end)}</button>
+          <span class="grow muted" style="font-size:13px">${fmt(r.start)}〜 音 ${r.n} 回</span>
+          <button class="chip ${verdict[i] === true ? "on" : ""}" data-ok="${i}">○ 正しい</button>
+          <button class="chip ${verdict[i] === false ? "on" : ""}" data-ng="${i}">✕ 違う</button></div>`).join("")}
+      </div>
+      <button class="btn block" id="rAdd">検出したラリーの終わりを、しるし(その他)として付ける</button>
+      <p class="muted">付けたしるしは試合記録の一覧で「得点」「失点」に付け替えられます。${m.youtubeId ? "YouTube の動画が、選んだ元の動画と同じ(切り取りなし)なら、時刻もそのまま合います。" : ""}</p>`;
+    const rerun = () => { verdict = {}; run(); };
+    box.querySelector("#rSens").onchange = (e) => { opt.sens = +e.target.value; rerun(); };
+    box.querySelector("#rGap").onchange = (e) => { opt.gap = +e.target.value; rerun(); };
+    box.querySelector("#rMin").onchange = (e) => { opt.minHits = +e.target.value; rerun(); };
+    box.querySelectorAll("[data-play]").forEach((b) => (b.onclick = () => {
+      const r = R[+b.dataset.play]; if (!video) return;
+      video.currentTime = Math.max(0, r.start - 1.5); video.playbackRate = 1; video.play();
+      clearTimeout(draw.stop); draw.stop = setTimeout(() => video.pause(), (r.end - r.start + 3) * 1000);
+      video.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    box.querySelectorAll("[data-ok]").forEach((b) => (b.onclick = () => { const i = +b.dataset.ok; verdict[i] = verdict[i] === true ? undefined : true; persist(); draw(); }));
+    box.querySelectorAll("[data-ng]").forEach((b) => (b.onclick = () => { const i = +b.dataset.ng; verdict[i] = verdict[i] === false ? undefined : false; persist(); draw(); }));
+    box.querySelector("#rMiss").onclick = () => { if (!video) return; missed.push(+video.currentTime.toFixed(2)); persist(); draw(); toast("見逃しとして足しました"); };
+    box.querySelector("#rAdd").onclick = async () => {
+      if (!confirm(`${R.length} 個のしるし(その他)を付けます。よろしいですか?`)) return;
+      await addMarks(R.map((r) => +(r.end + 0.3).toFixed(2))); toast("しるしを付けました"); close();
+    };
+  }
 }
 
 // ---------- 動画プレイヤー(端末の動画 / YouTube 埋め込み) ----------
