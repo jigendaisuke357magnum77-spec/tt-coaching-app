@@ -72,16 +72,22 @@
   .yt iframe { width: 100%; height: 100%; border: 0; display: block; }
   .tag.t { background: transparent; border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
   body.noscroll { overflow: hidden; }
-  .vfull { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; }
-  .vfull video { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; object-fit: contain; }
-  .vfull .yt { width: min(100vw, calc(100dvh * 16 / 9)); border-radius: 0; }
+  /* 全画面:動画は真ん中の枠だけに出し、ボタンは左右(縦向きは上下)の余白に置く → YouTube の操作ボタンと重ならない */
+  .vfull { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center;
+    padding: env(safe-area-inset-top) calc(124px + env(safe-area-inset-right)) env(safe-area-inset-bottom) calc(84px + env(safe-area-inset-left)); }
+  .vfull video { width: 100%; height: 100%; max-height: none; border-radius: 0; object-fit: contain; }
+  .vfull .yt { width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
   #fsBar { position: fixed; inset: 0; z-index: 55; pointer-events: none; }
   #fsBar > * { pointer-events: auto; }
   .fsb { position: absolute; background: rgba(0,0,0,.55); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 99px; padding: 9px 14px; font-size: 15px; }
   #fsExit { top: calc(10px + env(safe-area-inset-top)); left: calc(10px + env(safe-area-inset-left)); }
-  #fsCount { top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right)); pointer-events: none; }
+  #fsCount { top: calc(8px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); width: 108px; pointer-events: none;
+    border-radius: 12px; padding: 6px 8px; font-size: 13px; line-height: 1.35; text-align: center; }
+  #fsCount span { display: block; }
+  #fsCount .big { font-size: 17px; font-weight: 700; }
   .fsctl { position: absolute; left: calc(10px + env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
-  .fsctl .fsb { position: static; min-width: 64px; }
+  .fsctl .fsb { position: static; min-width: 64px; white-space: nowrap; }
+  body.noscroll .toast { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
   .fssheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78dvh; overflow: auto; background: rgba(20,24,28,.94); color: #fff;
     padding: 12px calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); border-radius: 14px 14px 0 0; }
   .fssheet .chip { background: rgba(255,255,255,.1); color: #fff; border-color: rgba(255,255,255,.25); }
@@ -91,8 +97,16 @@
   .toast { z-index: 60; }
   .kb { display: inline-block; color: #fff; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 99px; margin-right: 6px; white-space: nowrap; }
   .kbtn { color: #fff; border: 0; border-radius: 10px; font-weight: 700; font-size: 17px; padding: 14px 4px; }
-  .fskinds { position: absolute; right: calc(12px + env(safe-area-inset-right)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
-  .fskinds .fsb { position: static; border: 0; font-size: 17px; font-weight: 700; padding: 14px 16px; min-width: 96px; }
+  .fskinds { position: absolute; right: calc(8px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); width: 108px; display: flex; flex-direction: column; gap: 8px; }
+  .fskinds .fsb { position: static; border: 0; font-size: 17px; font-weight: 700; padding: 13px 4px; width: 100%; }
+  @media (orientation: portrait) {
+    .vfull { padding: calc(64px + env(safe-area-inset-top)) 0 calc(150px + env(safe-area-inset-bottom)); }
+    #fsCount { width: auto; max-width: calc(100vw - 120px); text-align: right; }
+    #fsCount span { display: inline; margin-left: 6px; }
+    .fsctl { top: auto; bottom: calc(84px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); flex-direction: row; }
+    .fskinds { left: calc(12px + env(safe-area-inset-left)); right: calc(12px + env(safe-area-inset-right)); width: auto; flex-direction: row; }
+    body.noscroll .toast { top: auto; bottom: calc(140px + env(safe-area-inset-bottom)); }
+  }
   .tally { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .tbox { border-radius: 10px; padding: 6px 4px 8px; text-align: center; background: var(--chip); border-top: 4px solid; }
   .tbox b { display: block; font-size: 26px; line-height: 1.3; font-variant-numeric: tabular-nums; }
@@ -283,7 +297,8 @@ async function screenMatch(mid) {
   if (!m) return (location.hash = "#/");
   setHeader("試合記録", "#/p/" + m.playerId + "/matches");
   m.markers ||= [];
-  const save = () => put("matches", m);
+  const save = () => { syncScoreFromMarks(m); return put("matches", m); };
+  if (syncScoreFromMarks(m)) await put("matches", m);
   $app.innerHTML = `
     <div class="card">
       <label>日付</label><input type="date" id="date" value="${esc(m.date)}">
@@ -361,7 +376,7 @@ async function screenMatch(mid) {
     const form = document.getElementById("markForm"), text = document.getElementById("markText");
     document.querySelectorAll("#vctl [data-kind]").forEach((b) => (b.onclick = async () => {
       const kind = b.dataset.kind, t = player.time();
-      if (kind !== "note") { await addMarker(t, "", [], kind); drawMarkers(); const c = tallyKinds(m.markers); return toast(`${fmt(t)} ${KINDS[kind].label}(得点 ${c.point}・失点 ${c.lost})`); }
+      if (kind !== "note") { await addMarker(t, "", [], kind); drawMarkers(); return toast(markToast(t, kind)); }
       player.pause(); pending = t;
       document.getElementById("markAt").textContent = `${fmt(pending)} その他(気になったこと)`;
       form.hidden = false; text.value = "";
@@ -377,6 +392,13 @@ async function screenMatch(mid) {
     };
     document.getElementById("fullBtn").onclick = enterFull;
     player.onReady(drawTimeline);
+  }
+  function markToast(t, kind) {
+    if (scoreMode(m) !== "auto") { const c = tallyKinds(m.markers); return `${fmt(t)} ${KINDS[kind].label}(得点 ${c.point}・失点 ${c.lost})`; }
+    const r = gamesFromMarks(m), last = r.games[r.games.length - 1];
+    const justEnded = last && last.end === t && !(r.cur && (r.cur.me || r.cur.op));
+    if (justEnded) return `第${r.games.length}G ${last.me > last.op ? "取った" : "落とした"} ${last.me}-${last.op}(ゲーム ${r.w}-${r.l})${r.decided ? (r.w > r.l ? " 勝ち!" : " 負け") : ""}`;
+    return `${fmt(t)} ${KINDS[kind].label} → ${liveScoreText(r)}`;
   }
   async function addMarker(t, txt, tg, kind) {
     m.markers.push({ id: uid(), t, kind, text: (txt || "").trim(), tags: tg });
@@ -401,8 +423,11 @@ async function screenMatch(mid) {
       </div>`;
     document.body.appendChild(bar);
     const sheet = bar.querySelector("#fsSheet"), txt = bar.querySelector("#fsText");
-    const count = () => { const c = tallyKinds(m.markers), r = pointRate(c);
-      bar.querySelector("#fsCount").textContent = `得点 ${c.point} ・ 失点 ${c.lost}${r != null ? `(${r}%)` : ""} ・ その他 ${c.note}`; };
+    const count = () => {
+      const c = tallyKinds(m.markers), rate = pointRate(c), r = scoreMode(m) === "auto" && hasPointMarks(m) ? gamesFromMarks(m) : null;
+      bar.querySelector("#fsCount").innerHTML = (r ? `<span class="big">ゲーム ${r.w}-${r.l}</span><span>${esc(liveScoreText(r))}</span>` : "") +
+        `<span>得点 ${c.point}</span><span>失点 ${c.lost}</span>${rate != null ? `<span>得点率 ${rate}%</span>` : ""}<span>その他 ${c.note}</span>`;
+    };
     count();
     let at = 0;
     bar.querySelector("#fsExit").onclick = () => {
@@ -412,7 +437,7 @@ async function screenMatch(mid) {
     bar.querySelector("#fsPlay").onclick = () => (player.paused() ? player.play() : player.pause());
     bar.querySelectorAll(".fskinds [data-kind]").forEach((b) => (b.onclick = async () => {
       const kind = b.dataset.kind, t = player.time();
-      if (kind !== "note") { await addMarker(t, "", [], kind); count(); return toast(`${fmt(t)} ${KINDS[kind].label}`); }
+      if (kind !== "note") { await addMarker(t, "", [], kind); count(); return toast(markToast(t, kind)); }
       player.pause(); at = t;
       bar.querySelector("#fsAt").textContent = `${fmt(at)} その他`;
       txt.value = ""; sheet.querySelectorAll(".chip.on").forEach((c) => c.classList.remove("on"));
@@ -437,6 +462,7 @@ async function screenMatch(mid) {
   }
   function drawMarkers() {
     document.getElementById("mcount").textContent = `しるし(${m.markers.length})`;
+    if (scoreMode(m) === "auto") drawScore(m, save);
     document.getElementById("tally").innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
       <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
@@ -587,9 +613,68 @@ function summarizeScore(m) {
   m.result = w > l ? "win" : w < l ? "lose" : "";
   return [w, l];
 }
+function drawAutoScore(m, save, box) {
+  const r = syncScoreFromMarks(m);
+  const bo = m.bestOf || 5;
+  box.innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <span style="font-size:28px;font-weight:700;font-variant-numeric:tabular-nums">${r.w} - ${r.l}</span>
+      ${r.decided ? `<span class="tag ${r.w > r.l ? "win" : "lose"}" style="font-size:15px">${r.w > r.l ? "勝ち" : "負け"}</span>` : `<span class="muted">試合中</span>`}
+    </div>
+    <div class="muted" style="font-size:13px">得点・失点のしるしから自動で計算(11点先取・10-10 からは2点差・${r.need}ゲーム先取)</div>
+    ${r.games.map((g, n) => `<div class="pitem row"><b style="min-width:42px">第${n + 1}G</b>
+      <span class="tag ${g.me > g.op ? "win" : "lose"}">${g.me > g.op ? "取った" : "落とした"}</span>
+      <span class="grow" style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${g.me} - ${g.op}</span>
+      <span class="muted" style="font-size:12px;min-width:44px;text-align:right">${fmt(g.end)}</span></div>`).join("")}
+    ${r.cur ? `<div class="pitem row"><b style="min-width:42px">第${r.games.length + 1}G</b><span class="muted">進行中</span>
+      <span class="grow" style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${r.cur.me} - ${r.cur.op}</span></div>` : ""}
+    ${r.ignored ? `<div class="muted" style="margin-top:6px">勝敗が決まったあとのしるし ${r.ignored} 件は数えていません</div>` : ""}
+    <div class="row" style="margin-top:10px"><span class="muted">試合形式</span>
+      ${[3, 5, 7].map((n) => `<button class="chip ${bo === n ? "on" : ""}" data-bo="${n}">${n}ゲームマッチ</button>`).join("")}</div>
+    <button class="btn sub block" id="toManual">スコアを手で入力する</button>`;
+  box.querySelectorAll("[data-bo]").forEach((b) => (b.onclick = () => { m.bestOf = +b.dataset.bo; save(); drawScore(m, save); refreshTally(m); }));
+  document.getElementById("toManual").onclick = () => { m.scoreMode = "manual"; save(); editingGame = -1; drawScore(m, save); };
+}
+function refreshTally(m) { const tl = document.getElementById("tally"); if (tl) tl.innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m)); }
+// ---------- しるし(得点・失点)からゲームスコアを自動計算(卓球のルール) ----------
+// 11点先取、10-10 以降は2点差がつくまで。bestOf ゲームの過半数を先に取った方が勝ち。勝敗が決まったあとのしるしは数えない
+function gamesFromMarks(m) {
+  const need = Math.ceil((m.bestOf || 5) / 2);
+  const pts = (m.markers || []).filter((k) => markKind(k) !== "note").sort((a, b) => a.t - b.t);
+  const games = []; let me = 0, op = 0, w = 0, l = 0, decided = false, ignored = 0;
+  for (const k of pts) {
+    if (decided) { ignored++; continue; }
+    markKind(k) === "point" ? me++ : op++;
+    if ((me >= 11 || op >= 11) && Math.abs(me - op) >= 2) {
+      games.push({ me, op, end: k.t }); me > op ? w++ : l++; me = op = 0;
+      if (w === need || l === need) decided = true;
+    }
+  }
+  return { games, cur: decided ? null : { me, op }, w, l, need, decided, ignored, any: pts.length > 0 };
+}
+const hasPointMarks = (m) => (m.markers || []).some((k) => markKind(k) !== "note");
+function scoreMode(m) {
+  if (m.scoreMode) return m.scoreMode;
+  const manual = (m.games || []).some((g) => gamePts(g));
+  return manual ? "manual" : "auto"; // 以前に手で入れたスコアがある試合は手入力のまま
+}
+function syncScoreFromMarks(m) {
+  if (scoreMode(m) !== "auto" || !hasPointMarks(m)) return null;
+  const r = gamesFromMarks(m);
+  m.scoreMode = "auto";
+  m.games = r.games.map((g) => ({ win: g.me > g.op, lose: Math.min(g.me, g.op) }));
+  summarizeScore(m);
+  return r;
+}
+function liveScoreText(r) { // 例:「第2G 7-5」
+  if (!r) return "";
+  if (r.decided) return r.w > r.l ? "試合終了・勝ち" : "試合終了・負け";
+  return `第${r.games.length + 1}G ${r.cur.me}-${r.cur.op}`;
+}
 let editingGame = -1;
 function drawScore(m, save) {
   const box = document.getElementById("scorebox");
+  if (scoreMode(m) === "auto" && hasPointMarks(m)) return drawAutoScore(m, save, box);
   if (!m.games) {
     m.games = [];
     if (m.score && !/^\d+-\d+ \(/.test(m.score)) m.legacyScore = m.score; // 以前の手入力スコアは残す
@@ -619,7 +704,10 @@ function drawScore(m, save) {
           <span class="grow" style="text-align:center">${pts[0]} - ${pts[1]}</span><button class="chip pt" data-dz="1">＋</button></div>` : ""}`}
       </div>`;
     }).join("")}
-    <button class="btn sub block" id="addGame">+ ゲームを追加</button>`;
+    <button class="btn sub block" id="addGame">+ ゲームを追加</button>
+    ${hasPointMarks(m) ? `<button class="btn sub block" id="toAuto" style="margin-top:6px">得点・失点のしるしから自動で計算する</button>` : ""}`;
+  const ta = document.getElementById("toAuto");
+  if (ta) ta.onclick = () => { if (!confirm("いまのスコアを、しるし(得点・失点)から計算し直します。よろしいですか?")) return; m.scoreMode = "auto"; save(); drawScore(m, save); };
   const commit = (autoNext) => {
     if (autoNext) editingGame = -1;
     const [w2, l2] = summarizeScore(m);
@@ -645,6 +733,7 @@ async function screenReview(mid) {
   if (!m) return (location.hash = "#/");
   setHeader("振り返り", "#/p/" + m.playerId + "/matches");
   m.markers ||= [];
+  if (syncScoreFromMarks(m)) await put("matches", m);
   const save = () => put("matches", m);
   $app.innerHTML = `
     <div class="card row">
