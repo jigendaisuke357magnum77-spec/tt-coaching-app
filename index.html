@@ -509,8 +509,9 @@ async function screenMatch(mid) {
 // ---------- ラリーの区切りの自動検出(テスト版) ----------
 // 動画の音を再生しながら聞き取り、高い音(打球音・台でのバウンド音)の大きさの変化を記録する。
 // 打球音が「区切りの秒数」以上とぎれたところを、ラリーの終わりとみなす。動画ファイルも音も保存・送信しない。
-function detectRallies(env, opt) {
-  const { t, L } = env, n = t.length; if (n < 10) return { hits: [], rallies: [] };
+function noiseFloor(env) {
+  if (env.floor) return env.floor;
+  const { t, L } = env, n = t.length;
   // 雑音の基準:前後 1.5 秒の下から 30% の大きさ
   const floor = new Float32Array(n), step = 20;
   for (let i = 0; i < n; i += step) {
@@ -519,24 +520,64 @@ function detectRallies(env, opt) {
     const f = w[Math.floor(w.length * 0.3)];
     for (let j = i; j < Math.min(n, i + step); j++) floor[j] = f;
   }
+  return (env.floor = floor);
+}
+function findHits(env, sens) {
+  const { t, L } = env, n = t.length, floor = noiseFloor(env);
   const hits = []; let last = -1;
   for (let i = 1; i < n - 1; i++) {
     const d = L[i] - floor[i];
-    if (d < opt.sens || L[i] < L[i - 1] || L[i] < L[i + 1]) continue;
+    if (d < sens || L[i] < L[i - 1] || L[i] < L[i + 1]) continue;
     if (last >= 0 && t[i] - last < 0.1) continue;
     hits.push(t[i]); last = t[i];
   }
+  return hits;
+}
+function groupRallies(hits, gap, minHits) {
   const rallies = []; let cur = null;
   for (const h of hits) {
-    if (cur && h - cur.end <= opt.gap) { cur.end = h; cur.n++; }
+    if (cur && h - cur.end <= gap) { cur.end = h; cur.n++; }
     else { if (cur) rallies.push(cur); cur = { start: h, end: h, n: 1 }; }
   }
   if (cur) rallies.push(cur);
-  return { hits, rallies: rallies.filter((r) => r.n >= opt.minHits) };
+  return rallies.filter((r) => r.n >= minHits);
+}
+function detectRallies(env, opt) {
+  if (env.t.length < 10) return { hits: [], rallies: [] };
+  const hits = findHits(env, opt.sens);
+  return { hits, rallies: groupRallies(hits, opt.gap, opt.minHits) };
+}
+// 自分で付けた得点・失点のしるし(= 正解)と、検出したラリーの終わりを突き合わせる。
+// しるしはラリーが終わってから押すので、ラリーの終わりの 1 秒前〜 5 秒後に押したものを同じポイントとみなす
+function matchMarks(rallies, truth) {
+  const used = new Set(), found = [], missed = [];
+  for (const tt of truth) {
+    let best = -1, bd = 1e9;
+    rallies.forEach((r, i) => { const d = tt - r.end; if (d >= -1 && d <= 5 && !used.has(i) && Math.abs(d - 1) < bd) { bd = Math.abs(d - 1); best = i; } });
+    if (best >= 0) { used.add(best); found.push(tt); } else missed.push(tt);
+  }
+  return { found, missed, extra: rallies.length - used.size, used };
+}
+// しるしにいちばん合う設定(感度・区切りの秒数・最少の音の数)を総当たりで探す
+function autoTune(env, truth) {
+  let best = null;
+  for (let sens = 5; sens <= 20; sens++) {
+    const hits = findHits(env, sens);
+    for (let gap = 1; gap <= 4.01; gap += 0.5) for (let mh = 1; mh <= 3; mh++) {
+      const R = groupRallies(hits, gap, mh), mm = matchMarks(R, truth);
+      const rec = mm.found.length / truth.length, pre = R.length ? (R.length - mm.extra) / R.length : 0;
+      const f = rec + pre ? (2 * rec * pre) / (rec + pre) : 0;
+      if (!best || f > best.f + 1e-9 || (Math.abs(f - best.f) < 1e-9 && rec > best.rec)) best = { f, rec, pre, sens, gap, minHits: mh };
+    }
+  }
+  return best;
 }
 function openRallyTest(m, save, addMarks) {
   const st = m.rallyTest || {};
-  const opt = { sens: st.sens ?? 12, gap: st.gap ?? 2.5, minHits: st.minHits ?? 3, rate: 2 };
+  const opt = { sens: st.sens ?? 10, gap: st.gap ?? 2.5, minHits: st.minHits ?? 2, rate: 2 };
+  const truth = (m.markers || []).filter((k) => markKind(k) !== "note").map((k) => k.t).sort((a, b) => a - b);
+  const hasTruth = truth.length >= 5;
+  let tuned = null;
   let env = null, res = null, verdict = st.verdict || {}, missed = st.missed || [], url = null, runId = 0;
   const panel = document.createElement("div"); panel.id = "rallyPanel";
   document.body.appendChild(panel); document.body.classList.add("noscroll");
@@ -586,8 +627,8 @@ function openRallyTest(m, save, addMarks) {
     let srcNode;
     try { srcNode = ac.createMediaElementSource(video); }
     catch (e) { stat.textContent = "この動画は検出に使えません。もう一度動画を選び直してください。"; return; }
-    const hp1 = ac.createBiquadFilter(); hp1.type = "highpass"; hp1.frequency.value = 2000;
-    const hp2 = ac.createBiquadFilter(); hp2.type = "highpass"; hp2.frequency.value = 2000;
+    const hp1 = ac.createBiquadFilter(); hp1.type = "highpass"; hp1.frequency.value = 1500;
+    const hp2 = ac.createBiquadFilter(); hp2.type = "highpass"; hp2.frequency.value = 1500;
     const proc = ac.createScriptProcessor(2048, 1, 1), mute = ac.createGain(); mute.gain.value = 0;
     srcNode.connect(hp1); hp1.connect(hp2); hp2.connect(proc); proc.connect(mute); mute.connect(ac.destination);
     const T = [], E = [], BLK = 256;
@@ -627,8 +668,18 @@ function openRallyTest(m, save, addMarks) {
     stat.textContent = `完了(${Math.round((Date.now() - started) / 1000)}秒)`;
     startBtn.disabled = false; startBtn.textContent = "もう一度検出";
     verdict = {}; missed = [];
+    // 調べた音の記録は端末に残しておき、次に開いたときは調べ直さずに設定だけ変えられるようにする(バックアップには含めない)
+    put("settings", { id: "rallyEnv:" + m.id, t: env.t, L: env.L }).catch(() => {});
+    if (hasTruth) { tuned = autoTune(env, truth); Object.assign(opt, { sens: tuned.sens, gap: tuned.gap, minHits: tuned.minHits }); }
     run();
   };
+  get("settings", "rallyEnv:" + m.id).then((v) => {
+    if (!v || env) return;
+    env = { t: v.t, L: v.L };
+    panel.querySelector("#rStat").textContent = "前回調べた結果を表示しています(動画を選ばなくても設定を変えられます)";
+    if (hasTruth && st.sens == null) { tuned = autoTune(env, truth); Object.assign(opt, { sens: tuned.sens, gap: tuned.gap, minHits: tuned.minHits }); }
+    run();
+  }).catch(() => {});
 
   function persist() {
     m.rallyTest = { sens: opt.sens, gap: opt.gap, minHits: opt.minHits, ends: res ? res.rallies.map((r) => +r.end.toFixed(2)) : [], verdict, missed, at: Date.now() };
@@ -641,18 +692,29 @@ function openRallyTest(m, save, addMarks) {
     const d = (video && video.duration) || (env.t[env.t.length - 1] || 1);
     const R = res.rallies, ok = R.filter((_, i) => verdict[i] === true).length, ng = R.filter((_, i) => verdict[i] === false).length;
     const sp = scorePoints(m), total = sp ? sp.me + sp.opp : null;
+    const mm = hasTruth ? matchMarks(R, truth) : null;
     box.innerHTML = `
       <h2>結果:ラリー ${R.length} 本</h2>
+      ${mm ? `<div class="card">
+        <div>あなたが付けた得点・失点のしるし <b>${truth.length}</b> 個と、自動で比べました。</div>
+        <div class="tally" style="margin-top:8px">
+          <div class="tbox" style="border-top-color:#16a34a"><b>${Math.round((mm.found.length / truth.length) * 100)}%</b><span>見つけた ${mm.found.length}/${truth.length}</span></div>
+          <div class="tbox" style="border-top-color:#e11d48"><b>${mm.missed.length}</b><span>見逃し</span></div>
+          <div class="tbox" style="border-top-color:#d97706"><b>${mm.extra}</b><span>余計な区切り</span></div></div>
+        ${tuned ? `<div class="muted" style="margin-top:6px">設定は、あなたのしるしにいちばん合うように自動で合わせました。</div>` : `<button class="btn sub block" id="rTune">あなたのしるしに合うように設定を自動調整</button>`}
+        ${mm.missed.length ? `<details style="margin-top:8px"><summary>見逃したところ(${mm.missed.length})を見る</summary>
+          ${mm.missed.map((tt) => `<div class="marker"><button class="time" data-miss="${tt}">▶ ${fmt(tt)}</button><span class="muted" style="font-size:13px">このしるしの前のラリーが見つかっていません</span></div>`).join("")}</details>` : ""}
+      </div>` : `<div class="card muted">得点・失点のしるしを5個以上付けた試合で検出すると、しるしと自動で比べて、設定も自動で合わせます(一つずつ確かめる必要がなくなります)。</div>`}
       <div class="card">
         ${total != null ? `<div>スコアからの合計ポイント数:<b>${total}</b>(検出 ${R.length} 本、差 ${R.length - total >= 0 ? "+" : ""}${R.length - total})</div>` : `<div class="muted">スコアを入れておくと、実際のポイント数と比べられます</div>`}
         <div class="rbar">${R.map((r) => `<i style="left:${(r.start / d) * 100}%;width:${Math.max(0.3, ((r.end - r.start) / d) * 100)}%"></i>`).join("")}${missed.map((t) => `<b style="left:${(t / d) * 100}%"></b>`).join("")}</div>
         <div class="muted" style="font-size:13px">緑の帯が検出したラリー、赤い線が見逃しとして足したところ</div>
         <label>感度 <b>${opt.sens}</b>(小さいほど小さな音も拾う)</label><input type="range" id="rSens" min="6" max="24" step="1" value="${opt.sens}">
         <label>区切りの秒数 <b>${opt.gap}</b> 秒(打球音がこれ以上とぎれたら区切る)</label><input type="range" id="rGap" min="1.5" max="5" step="0.5" value="${opt.gap}">
-        <label>1本と数える最少の音の数 <b>${opt.minHits}</b></label><input type="range" id="rMin" min="2" max="6" step="1" value="${opt.minHits}">
+        <label>1本と数える最少の音の数 <b>${opt.minHits}</b></label><input type="range" id="rMin" min="1" max="6" step="1" value="${opt.minHits}">
       </div>
-      <h2>確かめる(▶でそのラリーを再生)</h2>
-      <div class="card">
+      ${mm ? "" : `<h2>確かめる(▶でそのラリーを再生)</h2>`}
+      <div class="card" ${mm ? "hidden" : ""}>
         <div>確認済み:正しい <b>${ok}</b>・違う <b>${ng}</b>・見逃し <b>${missed.length}</b>
           ${ok + ng ? ` → 正しく区切れた割合 <b>${Math.round((ok / (ok + ng)) * 100)}%</b>` : ""}${ok + missed.length ? `・見逃し率 <b>${Math.round((missed.length / (ok + missed.length)) * 100)}%</b>` : ""}</div>
         <button class="btn sub block" id="rMiss">いまの再生位置を「見逃し」として足す</button>
@@ -663,7 +725,15 @@ function openRallyTest(m, save, addMarks) {
       </div>
       <button class="btn block" id="rAdd">検出したラリーの終わりを、しるし(その他)として付ける</button>
       <p class="muted">付けたしるしは試合記録の一覧で「得点」「失点」に付け替えられます。${m.youtubeId ? "YouTube の動画が、選んだ元の動画と同じ(切り取りなし)なら、時刻もそのまま合います。" : ""}</p>`;
-    const rerun = () => { verdict = {}; run(); };
+    const rerun = () => { verdict = {}; tuned = null; run(); };
+    const tb = box.querySelector("#rTune");
+    if (tb) tb.onclick = () => { tuned = autoTune(env, truth); Object.assign(opt, { sens: tuned.sens, gap: tuned.gap, minHits: tuned.minHits }); verdict = {}; run(); };
+    box.querySelectorAll("[data-miss]").forEach((b) => (b.onclick = () => {
+      if (!video) return toast("動画を選ぶと再生できます");
+      const tt = +b.dataset.miss; video.currentTime = Math.max(0, tt - 10); video.playbackRate = 1; video.play();
+      clearTimeout(draw.stop); draw.stop = setTimeout(() => video.pause(), 11000);
+      video.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
     box.querySelector("#rSens").onchange = (e) => { opt.sens = +e.target.value; rerun(); };
     box.querySelector("#rGap").onchange = (e) => { opt.gap = +e.target.value; rerun(); };
     box.querySelector("#rMin").onchange = (e) => { opt.minHits = +e.target.value; rerun(); };
@@ -677,8 +747,10 @@ function openRallyTest(m, save, addMarks) {
     box.querySelectorAll("[data-ng]").forEach((b) => (b.onclick = () => { const i = +b.dataset.ng; verdict[i] = verdict[i] === false ? undefined : false; persist(); draw(); }));
     box.querySelector("#rMiss").onclick = () => { if (!video) return; missed.push(+video.currentTime.toFixed(2)); persist(); draw(); toast("見逃しとして足しました"); };
     box.querySelector("#rAdd").onclick = async () => {
-      if (!confirm(`${R.length} 個のしるし(その他)を付けます。よろしいですか?`)) return;
-      await addMarks(R.map((r) => +(r.end + 0.3).toFixed(2))); toast("しるしを付けました"); close();
+      const add = mm ? R.filter((_, i) => !mm.used.has(i)) : R;
+      if (!add.length) return toast("付けるしるしはありません(すべてしるし済み)");
+      if (!confirm(`${add.length} 個のしるし(その他)を付けます${mm ? "(すでに得点・失点のしるしがあるところは除きます)" : ""}。よろしいですか?`)) return;
+      await addMarks(add.map((r) => +(r.end + 0.3).toFixed(2))); toast("しるしを付けました"); close();
     };
   }
 }
@@ -1072,6 +1144,7 @@ async function screenData() {
   document.getElementById("exp").onclick = async () => {
     const data = { app: "ttcoach", version: 1, exported: new Date().toISOString() };
     for (const s of ["players", "matches", "practices", "tasks", "settings"]) data[s] = await all(s);
+    data.settings = data.settings.filter((x) => !String(x.id).startsWith("rallyEnv:"));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
     a.download = `ttcoach-backup-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
