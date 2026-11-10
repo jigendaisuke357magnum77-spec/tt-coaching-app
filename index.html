@@ -85,10 +85,14 @@
     border-radius: 12px; padding: 6px 8px; font-size: 13px; line-height: 1.35; text-align: center; }
   #fsCount span { display: block; }
   #fsCount .big { font-size: 17px; font-weight: 700; }
-  .fsctl { position: absolute; left: calc(10px + env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
-  .fsctl .fsb { position: static; min-width: 64px; white-space: nowrap; }
+  .fsctl { position: absolute; left: calc(8px + env(safe-area-inset-left)); top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; }
+  .fsctl .fsb { position: static; min-width: 68px; white-space: nowrap; font-size: 14px; padding: 7px 8px; }
+  #fsListBtn { left: calc(8px + env(safe-area-inset-left)); bottom: calc(10px + env(safe-area-inset-bottom)); min-width: 68px; font-size: 14px; padding: 7px 8px; }
+  .fsrow { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.15); flex-wrap: wrap; }
+  .fsrow.sel { background: rgba(255,255,255,.08); }
+  .fsrow .time { color: #fda4af; }
   body.noscroll .toast { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
-  .fssheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78dvh; overflow: auto; background: rgba(20,24,28,.94); color: #fff;
+  .fssheet { position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; max-height: 78dvh; overflow: auto; background: rgba(20,24,28,.94); color: #fff;
     padding: 12px calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); border-radius: 14px 14px 0 0; }
   .fssheet .chip { background: rgba(255,255,255,.1); color: #fff; border-color: rgba(255,255,255,.25); }
   .fssheet .chip.on { background: #0f766e; border-color: #2dd4bf; }
@@ -101,9 +105,11 @@
   .fskinds .fsb { position: static; border: 0; font-size: 17px; font-weight: 700; padding: 13px 4px; width: 100%; }
   @media (orientation: portrait) {
     .vfull { padding: calc(64px + env(safe-area-inset-top)) 0 calc(150px + env(safe-area-inset-bottom)); }
-    #fsCount { width: auto; max-width: calc(100vw - 120px); text-align: right; }
-    #fsCount span { display: inline; margin-left: 6px; }
-    .fsctl { top: auto; bottom: calc(84px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); flex-direction: row; }
+    #fsCount { width: auto; max-width: calc(100vw - 196px); text-align: right; }
+    #fsCount span { display: inline-block; margin-left: 6px; white-space: nowrap; }
+    .fsctl { top: auto; bottom: calc(84px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); flex-direction: row; gap: 6px; }
+    .fsctl .fsb { min-width: 0; }
+    #fsListBtn { bottom: auto; top: calc(10px + env(safe-area-inset-top)); left: calc(96px + env(safe-area-inset-left)); }
     .fskinds { left: calc(12px + env(safe-area-inset-left)); right: calc(12px + env(safe-area-inset-right)); width: auto; flex-direction: row; }
     body.noscroll .toast { top: auto; bottom: calc(140px + env(safe-area-inset-bottom)); }
   }
@@ -413,10 +419,26 @@ async function screenMatch(mid) {
     return `${fmt(t)} ${KINDS[kind].label} → ${liveScoreText(r)}`;
   }
   async function addMarker(t, txt, tg, kind) {
-    m.markers.push({ id: uid(), t, kind, text: (txt || "").trim(), tags: tg });
+    m.markers.push({ id: uid(), t, kind, text: (txt || "").trim(), tags: tg, c: Date.now() });
     m.markers.sort((a, b) => a.t - b.t);
     await save();
   }
+  // ---- ポイントごとの再生:前のしるし〜このしるしの区間を再生して、終わりで止める
+  let segTimer = null;
+  function stopSegment() { clearInterval(segTimer); segTimer = null; }
+  function playSegment(from, to) {
+    if (!player) return;
+    stopSegment();
+    player.seek(Math.max(0, from));
+    segTimer = setInterval(() => { if (player.time() >= to) { player.pause(); stopSegment(); } }, 150);
+  }
+  // しるし k(得点・失点などを押した時刻)で終わるポイント = 1つ前のしるし〜しるし k
+  function pointRange(k) {
+    const sorted = [...m.markers].sort((a, b) => a.t - b.t), i = sorted.findIndex((x) => x.id === k.id);
+    const prev = i > 0 ? sorted[i - 1].t : Math.max(0, k.t - 20);
+    return [prev, k.t + 1];
+  }
+  function playPoint(k) { const [a, b] = pointRange(k); playSegment(a, b); return [a, b]; }
   // ---- 全画面でしるし(動画の要素は動かさず CSS で全画面にする:YouTube の読み込み直しを防ぐ)
   function enterFull() {
     const vw = document.getElementById("vwrap");
@@ -425,7 +447,9 @@ async function screenMatch(mid) {
     bar.innerHTML = `
       <button class="fsb" id="fsExit">× 終了</button>
       <span class="fsb" id="fsCount"></span>
-      <div class="fsctl"><button class="fsb" data-j="-5">−5秒</button><button class="fsb" id="fsPlay">⏯</button><button class="fsb" data-j="5">+5秒</button></div>
+      <div class="fsctl"><button class="fsb" id="fsPrev">◀ 前の点</button><button class="fsb" data-j="-5">−5秒</button><button class="fsb" id="fsPlay">⏯</button><button class="fsb" data-j="5">+5秒</button><button class="fsb" id="fsNext">次の点 ▶</button></div>
+      <button class="fsb" id="fsListBtn">≡ 一覧</button>
+      <div class="fssheet" id="fsList" hidden></div>
       <div class="fskinds">${KIND_KEYS.map((kk) => `<button class="fsb" data-kind="${kk}" style="background:${KINDS[kk].color}e6">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}</div>
       <div class="fssheet" id="fsSheet" hidden>
         <div class="row"><b id="fsAt" class="grow"></b><button class="btn sub" id="fsCancel">やめる</button><button class="btn" id="fsSave">付ける</button></div>
@@ -443,12 +467,64 @@ async function screenMatch(mid) {
     count();
     let at = 0;
     bar.querySelector("#fsExit").onclick = () => {
-      bar.remove(); vw.classList.remove("vfull"); document.body.classList.remove("noscroll"); drawMarkers();
+      stopSegment(); bar.remove(); vw.classList.remove("vfull"); document.body.classList.remove("noscroll"); drawMarkers();
     };
-    bar.querySelectorAll("[data-j]").forEach((b) => (b.onclick = () => player.jump(+b.dataset.j)));
-    bar.querySelector("#fsPlay").onclick = () => (player.paused() ? player.play() : player.pause());
+    bar.querySelectorAll("[data-j]").forEach((b) => (b.onclick = () => { stopSegment(); player.jump(+b.dataset.j); }));
+    bar.querySelector("#fsPlay").onclick = () => { stopSegment(); player.paused() ? player.play() : player.pause(); };
+    // 前の点 / 次の点:しるしとしるしの間(1ポイント分)を再生して、次のしるしの所で止める
+    const sortedMarks = () => [...m.markers].sort((a, b) => a.t - b.t);
+    const nav = (dir) => {
+      const L = sortedMarks(), now = player.time();
+      if (!L.length) return toast("まだしるしがありません");
+      let k = dir > 0 ? L.find((x) => x.t > now + 1.5) : [...L].reverse().find((x) => x.t + 1 < now - 0.5);
+      if (!k) return toast(dir > 0 ? "これより後のしるしはありません" : "これより前のしるしはありません");
+      const [a] = playPoint(k);
+      toast(`${fmt(a)}〜${fmt(k.t)}(${KINDS[markKind(k)].label})を再生`);
+    };
+    bar.querySelector("#fsPrev").onclick = () => nav(-1);
+    bar.querySelector("#fsNext").onclick = () => nav(1);
+    // しるし一覧(全画面のまま直せる)
+    const list = bar.querySelector("#fsList");
+    let selId = null;
+    const drawList = () => {
+      const L = sortedMarks(), now = player.time();
+      list.innerHTML = `
+        <div class="row"><b class="grow">しるし一覧(${L.length})</b><button class="btn sub" id="fsUndo">↶ 最後に付けたのを取り消す</button><button class="btn" id="fsListClose">閉じる</button></div>
+        <div class="muted" style="font-size:13px;color:#cbd5e1">▶ でそのポイント(前のしるし〜このしるし)を再生して止めます。行を押すと直せます。</div>
+        ${L.map((k) => `<div class="fsrow ${selId === k.id ? "sel" : ""}" data-row="${k.id}">
+          <button class="time" data-pp="${k.id}">▶ ${fmt(k.t)}</button>
+          <button class="grow" data-sel="${k.id}" style="background:none;border:0;color:#fff;text-align:left;padding:0">${kindBadge(markKind(k))}${esc(markLabel(k))}</button>
+          ${selId === k.id ? `<div style="width:100%" class="chips">
+            ${KIND_KEYS.map((kk) => `<button class="chip ${markKind(k) === kk ? "on" : ""}" data-fk="${kk}">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}
+            <button class="chip" data-retime>時刻をいまの位置(${fmt(now)})にする</button>
+            <button class="chip" data-del style="border-color:#fb7185;color:#fda4af">削除</button></div>` : ""}
+        </div>`).join("") || `<div class="muted">しるしはまだありません</div>`}`;
+      list.querySelector("#fsListClose").onclick = () => { list.hidden = true; };
+      list.querySelector("#fsUndo").onclick = async () => {
+        if (!m.markers.length) return;
+        const last = m.markers.reduce((a, b) => ((b.c || 0) >= (a.c || 0) ? b : a));
+        m.markers = m.markers.filter((x) => x !== last); await save(); count(); drawList();
+        toast(`${fmt(last.t)} の${KINDS[markKind(last)].label}を取り消しました`);
+      };
+      list.querySelectorAll("[data-pp]").forEach((b) => (b.onclick = () => {
+        const k = m.markers.find((x) => x.id === b.dataset.pp); selId = k.id; list.hidden = true; playPoint(k);
+      }));
+      list.querySelectorAll("[data-sel]").forEach((b) => (b.onclick = () => { selId = selId === b.dataset.sel ? null : b.dataset.sel; drawList(); }));
+      const cur = () => m.markers.find((x) => x.id === selId);
+      list.querySelectorAll("[data-fk]").forEach((b) => (b.onclick = async () => { cur().kind = b.dataset.fk; await save(); count(); drawList(); }));
+      const rt = list.querySelector("[data-retime]");
+      if (rt) rt.onclick = async () => { const k = cur(); k.t = +player.time().toFixed(2); m.markers.sort((a, b) => a.t - b.t); await save(); count(); drawList(); toast(`${fmt(k.t)} に動かしました`); };
+      const dl = list.querySelector("[data-del]");
+      if (dl) dl.onclick = async () => { const k = cur(); m.markers = m.markers.filter((x) => x !== k); selId = null; await save(); count(); drawList(); toast("削除しました"); };
+      const selRow = list.querySelector(".fsrow.sel") || [...list.querySelectorAll(".fsrow")].find((r) => { const k = m.markers.find((x) => x.id === r.dataset.row); return k && k.t >= now; });
+      if (selRow) selRow.scrollIntoView({ block: "center" });
+    };
+    bar.querySelector("#fsListBtn").onclick = () => {
+      if (!list.hidden) { list.hidden = true; return; }
+      sheet.hidden = true; player.pause(); stopSegment(); list.hidden = false; drawList();
+    };
     bar.querySelectorAll(".fskinds [data-kind]").forEach((b) => (b.onclick = async () => {
-      const kind = b.dataset.kind, t = player.time();
+      const kind = b.dataset.kind, t = player.time(); stopSegment();
       if (kind !== "note") { await addMarker(t, "", [], kind); count(); return toast(markToast(t, kind)); }
       player.pause(); at = t;
       bar.querySelector("#fsAt").textContent = `${fmt(at)} その他`;
@@ -477,7 +553,7 @@ async function screenMatch(mid) {
     if (scoreMode(m) === "auto") drawScore(m, save);
     document.getElementById("tally").innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
-      <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
+      <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">▶ ${fmt(k.t)}</button>
         <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${kindBadge(markKind(k))}${esc(markLabel(k))}
           <br>${(k.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}<span class="muted" style="font-size:12px">${editingMarker === k.id ? "" : "編集 ✎"}</span></button>
         <button class="chip" data-rm="${k.id}">削除</button>
@@ -487,7 +563,12 @@ async function screenMatch(mid) {
           <div class="chips">${[...new Set([...tags, ...(k.tags || [])])].map((t) => `<button class="chip ${(k.tags || []).includes(t) ? "on" : ""}" data-kt="${esc(t)}">${esc(t)}</button>`).join("")}</div></div>` : ""}
       </div>`).join("")
       : `<span class="muted">${player ? "再生中に「得点」「失点」「その他」を押すと、その時間にしるしが付きます" : "動画を登録すると、しるしを付けられます"}</span>`;
-    document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => { if (player) { player.seek(+b.dataset.t); player.el.scrollIntoView({ behavior: "smooth", block: "center" }); } }));
+    document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => {
+      if (!player) return;
+      const k = m.markers.find((x) => String(x.t) === b.dataset.t);
+      if (k) playPoint(k); else player.seek(+b.dataset.t);
+      player.el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }));
     document.querySelectorAll("#mlist [data-edit]").forEach((b) => (b.onclick = () => { editingMarker = editingMarker === b.dataset.edit ? null : b.dataset.edit; drawMarkers(); }));
     document.querySelectorAll("#mlist [data-kt]").forEach((b) => (b.onclick = async () => {
       const k = m.markers.find((x) => x.id === editingMarker); k.tags ||= [];
