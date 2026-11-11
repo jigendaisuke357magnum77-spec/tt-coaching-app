@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f766e">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>卓球コーチング記録</title>
+<title>ノビシロ・ノート</title>
+<meta name="apple-mobile-web-app-title" content="ノビシロ・ノート">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
 <style>
   :root {
     --bg: #f6f7f8; --card: #ffffff; --ink: #1f2933; --muted: #6b7680;
@@ -130,7 +135,7 @@
 <body>
 <header>
   <button id="back" aria-label="戻る" hidden>‹ 戻る</button>
-  <h1 id="title">卓球コーチング記録</h1>
+  <h1 id="title">ノビシロ・ノート</h1>
   <button id="menu" aria-label="データ管理">⋯</button>
 </header>
 <main id="app"></main>
@@ -178,7 +183,7 @@ function toast(msg) { const el = document.getElementById("toast"); el.textConten
 function setHeader(title, back) {
   document.getElementById("title").textContent = title;
   const b = document.getElementById("back"); b.hidden = !back; b.onclick = () => (location.hash = back);
-  document.title = title + " | 卓球コーチング記録";
+  document.title = title + " | ノビシロ・ノート";
 }
 const OPP_TYPES = ["カット型", "ドライブ型", "前陣速攻型", "異質(表・粒)", "オールラウンド", "その他"];
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
