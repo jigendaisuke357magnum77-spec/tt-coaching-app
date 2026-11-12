@@ -150,14 +150,14 @@
 <script>
 "use strict";
 // ---------- 保存(すべて端末内のIndexedDB。外部送信はしない) ----------
-const DB_NAME = "ttcoach", DB_VER = 3;
+const DB_NAME = "ttcoach", DB_VER = 4;
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
     const r = indexedDB.open(DB_NAME, DB_VER);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings", "notes"]) {
+      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings", "notes", "opponents"]) {
         if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" });
       }
     };
@@ -187,7 +187,7 @@ const NOTE_TAGS = ["サーブ", "レシーブ", "3球目攻撃", "ブロック",
 function latestNext(pid, notes, matches) {
   const c = [
     ...notes.filter((n) => n.playerId === pid && n.next).map((n) => ({ text: n.next, date: n.date, at: n.updated || n.created || 0, from: n.type === "match" ? "試合の記録" : "練習の記録" })),
-    ...matches.filter((m) => m.playerId === pid && (m.nextFocus || "").trim()).map((m) => ({ text: m.nextFocus.trim(), date: m.date, at: m.created || 0, from: `試合の振り返り(vs ${m.oppType || "相手"})` })),
+    ...matches.filter((m) => m.playerId === pid && (m.nextFocus || "").trim()).map((m) => ({ text: m.nextFocus.trim(), date: m.date, at: m.created || 0, from: `試合の振り返り(vs ${vsLabel(m)})` })),
   ];
   c.sort((a, b) => b.date.localeCompare(a.date) || b.at - a.at);
   return c[0] || null;
@@ -211,6 +211,19 @@ function setHeader(title, back) {
   document.title = title + " | ノビシロノート";
 }
 const OPP_TYPES = ["カット型", "ドライブ型", "前陣速攻型", "異質(表・粒)", "オールラウンド", "その他"];
+// 対戦相手データベースの戦型(用具の持ち方・ラバー)
+const OPP_STYLES = ["右シェーク裏裏", "左シェーク裏裏", "右シェーク裏表", "左シェーク裏表", "右シェーク異質(粒・アンチ)", "左シェーク異質(粒・アンチ)", "右ペン裏", "左ペン裏", "ペン表", "ペン粒高", "カットマン", "その他"];
+const OPP_FIELDS = [
+  ["serveGood", "効いたサーブ", "例 YG の下回転を短く"],
+  ["serveBad", "効かなかったサーブ", "例 ロングサーブはバックで打たれた"],
+  ["goodCourse", "相手の得意コース", "例 フォア側の大きいボール"],
+  ["weakCourse", "相手の苦手コース", "例 ミドル、フォア前"],
+  ["tactics", "試合中に効いた戦術", "例 ミドル攻めからバックへ展開 / ツッツキを深く送る"],
+  ["gear", "使用用具メモ", "例 ラケット・ラバー"],
+  ["memo", "その他メモ", ""],
+];
+// 試合の「vs ○○」の表示(対戦相手を選んでいれば名前とチーム)
+const vsLabel = (m) => m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手");
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
 const PRACTICE_KINDS = ["フォアドライブ", "バックドライブ", "サーブ練習", "レシーブ練習", "多球練習", "フットワーク", "ツッツキ", "ゲーム練習"];
 let currentUrl = null;
@@ -225,6 +238,8 @@ const routes = [
   [/^#\/r\/([^/]+)$/, screenReview],
   [/^#\/pr\/([^/]+)$/, screenPractice],
   [/^#\/data$/, screenData],
+  [/^#\/o$/, screenOpponents],
+  [/^#\/o\/([^/]+)$/, screenOpponent],
 ];
 async function render() {
   revokeVideo();
@@ -255,6 +270,7 @@ async function screenPlayers() {
         <div class="remind-text">${r ? esc(r.text) : `<span class="muted" style="font-size:15px">まだありません。記録の最後に「次回の伸びしろ」を1行書くと、ここに出ます</span>`}</div>
         <button class="btn block" data-go="#/q/${p.id}">⚡ 30秒で記録する</button>
       </div>`).join("")}
+    <button class="btn sub block" data-go="#/o" style="margin:0 0 4px">🔍 対戦相手の攻略メモ</button>
     ${players.length ? `<h2>選手</h2>` : ""}
     ${players.length ? players.map((p) => {
       const nm = matches.filter((m) => m.playerId === p.id).length;
@@ -298,7 +314,7 @@ async function screenPlayer(pid, tab = "notes") {
   } else if (tab === "matches") {
     body = ms.length ? ms.map((m) => `
       <button class="list-item" data-go="#/r/${m.id}">
-        <span class="grow"><b>${esc(m.date)}</b> vs ${esc(m.oppType || "相手")}
+        <span class="grow"><b>${esc(m.date)}</b> vs ${esc(vsLabel(m))}
           ${m.result ? `<span class="tag ${m.result}">${m.result === "win" ? "勝ち" : "負け"}</span>` : ""}
           <br><span class="muted">${esc(m.score || "")} ${m.videoId ? "🎥" : m.youtubeId ? "▶ YouTube" : ""} ${(() => { const c = tallyKinds(m.markers); return `得点 ${c.point}・失点 ${c.lost}`; })()}</span></span><span class="muted">›</span>
       </button>`).join("") : `<div class="empty">試合の記録はまだありません</div>`;
@@ -355,6 +371,79 @@ async function screenPlayer(pid, tab = "notes") {
     for (const t of tasks.filter((t) => t.playerId === pid)) await del("tasks", t.id);
     for (const n of ns) await del("notes", n.id);
     await del("players", pid); location.hash = "#/";
+  };
+}
+
+// ---------- 対戦相手の攻略データベース(実名・チーム名。この端末の中だけに保存) ----------
+async function newOpponent() {
+  const name = (prompt("対戦相手の名前") || "").trim(); if (!name) return null;
+  const team = (prompt("チーム名(所属。わからなければ空欄)") || "").trim();
+  const o = { id: uid(), name, team, style: "", created: Date.now(), updated: Date.now() };
+  await put("opponents", o); return o;
+}
+async function screenOpponents() {
+  setHeader("対戦相手", "#/");
+  const [opps, matches] = await Promise.all([all("opponents"), all("matches")]);
+  let q = "", style = "";
+  $app.innerHTML = `
+    <input id="oq" type="search" placeholder="名前・チーム名・メモで探す" style="font-size:18px">
+    <div class="chips" id="ostyles" style="margin:8px 0"></div>
+    <div id="olist"></div>
+    <p class="muted" style="font-size:13px">対戦相手の情報は、この端末の中だけに保存されます。</p>
+    <button class="btn fab" id="oadd">+ 対戦相手</button>`;
+  const styles = [...new Set(opps.map((o) => o.style).filter(Boolean))];
+  const draw = () => {
+    document.getElementById("ostyles").innerHTML = styles.length ? [`<button class="chip ${style ? "" : "on"}" data-st="">すべての戦型</button>`, ...styles.map((st) => `<button class="chip ${style === st ? "on" : ""}" data-st="${esc(st)}">${esc(st)}</button>`)].join("") : "";
+    const k = q.toLowerCase();
+    const hit = opps.filter((o) => (!style || o.style === style) && (!k || [o.name, o.team, o.style, ...OPP_FIELDS.map(([f]) => o[f])].join(" ").toLowerCase().includes(k)))
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    document.getElementById("olist").innerHTML = hit.length ? hit.map((o) => {
+      const ms = matches.filter((m) => m.opponentId === o.id), w = ms.filter((m) => m.result === "win").length, l = ms.filter((m) => m.result === "lose").length;
+      return `<button class="list-item" data-go="#/o/${o.id}"><span class="avatar">${esc(o.name.slice(0, 1))}</span>
+        <span class="grow"><b>${esc(o.name)}</b> <span class="muted">${esc(o.team || "")}</span><br><span class="muted">${esc(o.style || "戦型未登録")}${ms.length ? ` ・ ${w}勝${l}敗` : ""}</span></span><span class="muted">›</span></button>`;
+    }).join("") : `<div class="empty">${opps.length ? "見つかりません" : "まだ登録がありません。<br>右下の「+ 対戦相手」か、試合記録の「対戦相手」から登録できます。"}</div>`;
+    bindGo();
+    $app.querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { style = b.dataset.st; draw(); }));
+  };
+  document.getElementById("oq").oninput = (e) => { q = e.target.value.trim(); draw(); };
+  document.getElementById("oadd").onclick = async () => { const o = await newOpponent(); if (o) location.hash = "#/o/" + o.id; };
+  draw();
+}
+async function screenOpponent(oid) {
+  const o = await get("opponents", oid);
+  if (!o) return (location.hash = "#/o");
+  setHeader(o.name, "#/o");
+  const matches = (await all("matches")).filter((m) => m.opponentId === oid).sort((a, b) => b.date.localeCompare(a.date));
+  const w = matches.filter((m) => m.result === "win").length, l = matches.filter((m) => m.result === "lose").length;
+  $app.innerHTML = `
+    <div class="card">
+      <div class="row"><div class="grow"><label style="margin-top:0">名前</label><input id="o_name" value="${esc(o.name)}"></div></div>
+      <label>チーム名</label><input id="o_team" value="${esc(o.team || "")}" placeholder="所属チーム・大学名など">
+      <label>戦型</label>
+      <select id="o_style"><option value="">選択してください</option>${[...new Set([...OPP_STYLES, o.style].filter(Boolean))].map((st) => `<option ${st === o.style ? "selected" : ""}>${esc(st)}</option>`).join("")}</select>
+    </div>
+    <h2>攻略メモ</h2>
+    <div class="card">${OPP_FIELDS.map(([f, label, ph]) => `<label>${label}</label><textarea data-of="${f}" placeholder="${esc(ph)}" style="min-height:52px">${esc(o[f] || "")}</textarea>`).join("")}</div>
+    <h2>この相手との試合(${matches.length ? `${w}勝${l}敗` : "まだなし"})</h2>
+    ${matches.length ? matches.map((m) => `<button class="list-item" data-go="#/r/${m.id}"><span class="grow"><b>${esc(m.date)}</b>
+      ${m.result ? `<span class="tag ${m.result}">${m.result === "win" ? "勝ち" : "負け"}</span>` : ""}<br><span class="muted">${esc(m.score || "")}${(m.nextFocus || "").trim() ? ` ・ 次に意識:${esc(m.nextFocus.trim())}` : ""}</span></span><span class="muted">›</span></button>`).join("")
+      : `<p class="muted">試合記録の「対戦相手」でこの相手を選ぶと、ここに並びます。</p>`}
+    <button class="btn danger block" id="o_del" style="margin-top:28px">この対戦相手を削除</button>`;
+  bindGo();
+  const save = async () => {
+    o.name = document.getElementById("o_name").value.trim() || o.name; o.team = document.getElementById("o_team").value.trim();
+    o.style = document.getElementById("o_style").value;
+    $app.querySelectorAll("[data-of]").forEach((t) => (o[t.dataset.of] = t.value.trim()));
+    o.updated = Date.now(); await put("opponents", o);
+    // 試合記録側の表示名もそろえる
+    for (const m of matches) if (m.oppName !== o.name || m.oppTeam !== o.team) { m.oppName = o.name; m.oppTeam = o.team; await put("matches", m); }
+    setHeader(o.name, "#/o");
+  };
+  $app.querySelectorAll("input, select, textarea").forEach((el) => (el.onchange = save));
+  document.getElementById("o_del").onclick = async () => {
+    if (!confirm(`${o.name} の攻略メモを削除します。よろしいですか?(試合記録は残ります)`)) return;
+    for (const m of matches) { m.opponentId = null; await put("matches", m); }
+    await del("opponents", o.id); location.hash = "#/o";
   };
 }
 
@@ -426,11 +515,15 @@ async function screenMatch(mid) {
   m.markers ||= [];
   const save = () => { syncScoreFromMarks(m); return put("matches", m); };
   if (syncScoreFromMarks(m)) await put("matches", m);
+  const opps = (await all("opponents")).sort((a, b) => a.name.localeCompare(b.name, "ja"));
   $app.innerHTML = `
     <div class="card">
       <label>日付</label><input type="date" id="date" value="${esc(m.date)}">
       <label>相手のタイプ</label>
       <select id="opp"><option value="">選択してください</option>${OPP_TYPES.map((o) => `<option ${o === m.oppType ? "selected" : ""}>${o}</option>`).join("")}</select>
+      <label>対戦相手(攻略メモ)</label>
+      <div class="row"><select id="oppSel" class="grow"><option value="">選ばない</option>${opps.map((o) => `<option value="${o.id}" ${o.id === m.opponentId ? "selected" : ""}>${esc(o.name)}${o.team ? `(${esc(o.team)})` : ""}</option>`).join("")}<option value="__new">+ 新しく登録…</option></select>
+        ${m.opponentId ? `<button class="chip" data-go="#/o/${m.opponentId}">攻略メモ ›</button>` : ""}</div>
     </div>
     <h2>スコア(タップで入力)</h2>
     <div class="card" id="scorebox"></div>
@@ -460,6 +553,17 @@ async function screenMatch(mid) {
   for (const [id, key] of [["date", "date"], ["opp", "oppType"]]) {
     document.getElementById(id).onchange = (e) => { m[key] = e.target.value; save(); };
   }
+  document.getElementById("oppSel").onchange = async (e) => {
+    let id = e.target.value;
+    if (id === "__new") {
+      const o = await newOpponent();
+      if (!o) { e.target.value = m.opponentId || ""; return; }
+      id = o.id; opps.push(o);
+    }
+    const o = opps.find((x) => x.id === id);
+    m.opponentId = o ? o.id : null; m.oppName = o ? o.name : ""; m.oppTeam = o ? o.team || "" : "";
+    await save(); render();
+  };
   editingGame = -1;
   drawScore(m, save);
   const file = document.getElementById("file");
@@ -1221,7 +1325,7 @@ async function screenReview(mid) {
   const save = () => put("matches", m);
   $app.innerHTML = `
     <div class="card row">
-      <div class="grow"><b>${esc(m.date)}</b> vs ${esc(m.oppType || "相手")}
+      <div class="grow"><b>${esc(m.date)}</b> vs ${esc(vsLabel(m))}
         ${m.result ? `<span class="tag ${m.result}">${m.result === "win" ? "勝ち" : "負け"}</span>` : ""}<br>
         <span class="muted">${esc(m.score || "")}</span></div>
       <button class="btn sub" data-go="#/m/${m.id}">編集・しるし</button>
@@ -1270,7 +1374,7 @@ async function screenReview(mid) {
   };
   const addTask = async (text) => {
     if (!text.trim()) return toast("内容が空です");
-    await put("tasks", { id: uid(), playerId: m.playerId, text: text.trim(), source: `${m.date} vs ${m.oppType || "相手"} の振り返りから`, matchId: m.id, done: false, created: Date.now() });
+    await put("tasks", { id: uid(), playerId: m.playerId, text: text.trim(), source: `${m.date} vs ${vsLabel(m)} の振り返りから`, matchId: m.id, done: false, created: Date.now() });
     toast("課題に追加しました(練習記録で使えます)");
   };
   drawList();
@@ -1279,7 +1383,7 @@ async function screenReview(mid) {
     const pl = await get("players", m.playerId), c = tallyKinds(m.markers), rate = pointRate(c);
     const fresh = await get("matches", m.id) || m;
     await shareOut(shareText([
-      `【ノビシロノート】${jpDate(fresh.date)} 試合 ${pl ? pl.nickname : ""} vs ${fresh.oppType || "相手"}`,
+      `【ノビシロノート】${jpDate(fresh.date)} 試合 ${pl ? pl.nickname : ""} vs ${vsLabel(fresh)}`,
       fresh.score && `スコア:${fresh.score}${fresh.result ? (fresh.result === "win" ? " 勝ち" : " 負け") : ""}`,
       (c.point + c.lost) && `得点 ${c.point}・失点 ${c.lost}${rate != null ? `(得点率 ${rate}%)` : ""}`,
       (fresh.nextFocus || "").trim() && `次の練習で意識すること:${fresh.nextFocus.trim()}`,
@@ -1521,7 +1625,7 @@ async function screenData() {
   };
   document.getElementById("exp").onclick = async () => {
     const data = { app: "ttcoach", version: 1, exported: new Date().toISOString() };
-    for (const s of ["players", "matches", "practices", "tasks", "settings", "notes"]) data[s] = await all(s);
+    for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents"]) data[s] = await all(s);
     data.settings = data.settings.filter((x) => !String(x.id).startsWith("rallyEnv:"));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
@@ -1534,7 +1638,7 @@ async function screenData() {
       const data = JSON.parse(await f.files[0].text());
       if (data.app !== "ttcoach") throw new Error("このアプリのバックアップではありません");
       if (!confirm("バックアップの内容を取り込みます(同じ記録は上書き)。よろしいですか?")) return;
-      for (const s of ["players", "matches", "practices", "tasks", "settings", "notes"]) for (const v of data[s] || []) await put(s, v);
+      for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents"]) for (const v of data[s] || []) await put(s, v);
       toast("復元しました"); location.hash = "#/";
     } catch (e) { alert("復元できませんでした: " + e.message); }
   };
