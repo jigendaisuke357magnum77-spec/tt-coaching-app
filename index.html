@@ -138,6 +138,26 @@
   .meter i { display: block; height: 100%; }
   .trow { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--line); }
   .trow:last-child { border-bottom: 0; }
+  /* 振り分けモード:縦向きは上に動画・下に選択欄、横向きは左に動画・右に選択欄 */
+  body.classify .vfull { padding: env(safe-area-inset-top) 0 52dvh; }
+  #clsBar { position: fixed; left: 0; right: 0; bottom: 0; height: 52dvh; z-index: 56; overflow: auto; background: #14181c; color: #fff;
+    padding: 10px calc(14px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left)); }
+  @media (orientation: landscape) {
+    body.classify .vfull { padding: env(safe-area-inset-top) 46vw env(safe-area-inset-bottom) env(safe-area-inset-left); }
+    #clsBar { top: 0; left: auto; width: 46vw; height: auto; }
+  }
+  #clsBar .chip { background: rgba(255,255,255,.1); color: #fff; border-color: rgba(255,255,255,.25); padding: 7px 12px; font-size: 15px; }
+  #clsBar .chip.on { background: #1673A8; border-color: #5cc8e0; }
+  #clsBar .btn.sub { background: rgba(255,255,255,.15); color: #fff; }
+  #clsBar .dimh { font-size: 13px; color: #cbd5e1; margin: 8px 0 2px; }
+  body.classify .toast { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
+  @media (orientation: landscape) {
+    body.classify .toast { left: 27vw; }
+    #clsBar { padding-top: 6px; }
+    #clsBar .chip { padding: 5px 10px; font-size: 14px; }
+    #clsBar .dimh { margin: 4px 0 2px; }
+    #clsBar .btn { padding: 8px 10px; }
+  }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -231,6 +251,16 @@ const HANDS = [["R", "右利き"], ["L", "左利き"]];
 const handLabel = (h) => (h === "L" ? "左" : h === "R" ? "右" : "");
 // 相手のラバーの種類(フォア面・バック面)
 const RUBBERS = ["裏ソフト", "表ソフト", "粒高", "アンチ", "一枚ラバー"];
+// ポイントの振り分け(どの球で・コース・長さ・回転)
+const PT_DIMS = [
+  ["shot", "どの球で決まったか", [["serve", "サーブ"], ["receive", "レシーブ"], ["third", "3球目"], ["fourth", "4球目"], ["rally", "ラリー"]]],
+  ["course", "コース", [["fore", "フォア"], ["middle", "ミドル"], ["back", "バック"]]],
+  ["length", "長さ", [["short", "短い"], ["long", "長い"]]],
+  ["spin", "回転", [["top", "上回転"], ["under", "下回転"], ["side", "横回転"], ["knuckle", "ナックル"]]],
+];
+const dimLabel = (dim, v) => { const d = PT_DIMS.find((x) => x[0] === dim); const o = d && d[2].find((x) => x[0] === v); return o ? o[1] : ""; };
+// 例「3球目・バック短・上回転」
+const patternLabel = (k) => [dimLabel("shot", k.shot), (dimLabel("course", k.course) + (k.length ? dimLabel("length", k.length).slice(0, 1) : "")) || (k.length ? dimLabel("length", k.length) : ""), dimLabel("spin", k.spin)].filter(Boolean).join("・");
 const rubberLabel = (o) => (o.oppRubberF || o.oppRubberB ? `F${o.oppRubberF || "?"}/B${o.oppRubberB || "?"}` : "");
 const vsLabel = (m) => (m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手")) + (m.oppHand ? `・${handLabel(m.oppHand)}` : "") + (rubberLabel(m) ? `・${rubberLabel(m)}` : "");
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
@@ -253,6 +283,8 @@ const routes = [
 async function render() {
   revokeVideo();
   document.getElementById("fsBar")?.remove();
+  document.getElementById("clsBar")?.remove();
+  document.body.classList.remove("classify");
   document.body.classList.remove("noscroll");
   const h = location.hash || "#/";
   for (const [re, fn] of routes) {
@@ -493,6 +525,25 @@ function trendHTML(ms, ps, ns, tasks) {
     out.push(`<h2>相手のラバー別の得点率(全 ${ms.length} 試合)</h2><div class="card">${rubs.map(rowHTML).join("")}
       <div class="muted" style="font-size:13px;margin-top:6px">フォア面かバック面のどちらかにそのラバーを使う相手の試合をまとめています(1試合が2つに入ることがあります)</div></div>`);
     weak(rubs, "そのラバーの");
+  }
+  // 1c) 得点・失点のパターン(振り分けモードで付けた どの球・コース・長さ・回転)
+  const tagged = ms.flatMap((m) => (m.markers || []).filter((k) => markKind(k) !== "note" && patternLabel(k)));
+  if (tagged.length) {
+    const agg = (keyFn) => { const o = {}; for (const k of tagged) { const key = keyFn(k); if (!key) continue; o[key] ||= { point: 0, lost: 0 }; o[key][markKind(k) === "point" ? "point" : "lost"]++; } return Object.entries(o); };
+    const combos = agg(patternLabel);
+    const best = combos.filter(([, v]) => v.point >= 2).sort((a, b) => b[1].point - a[1].point || a[1].lost - b[1].lost).slice(0, 5);
+    const worst = combos.filter(([, v]) => v.lost >= 2).sort((a, b) => b[1].lost - a[1].lost || a[1].point - b[1].point).slice(0, 5);
+    const prow = ([key, v]) => `<div class="trow"><span class="grow">${esc(key)}</span><span class="kb" style="background:#16a34a">得点 ${v.point}</span><span class="kb" style="background:#e11d48">失点 ${v.lost}</span></div>`;
+    const dimTable = (d, label) => {
+      const rows = agg((k) => dimLabel(d, k[d])).sort((a, b) => b[1].point + b[1].lost - (a[1].point + a[1].lost));
+      return rows.length ? `<div class="dimh" style="color:var(--muted);font-size:13px;margin-top:8px">${label}</div>` + rows.map(([key, v]) => `<div class="trow"><span class="grow">${esc(key)}</span><b>${Math.round((v.point / (v.point + v.lost)) * 100)}%</b><span class="muted" style="font-size:13px">得点${v.point}・失点${v.lost}</span></div>`).join("") : "";
+    };
+    out.push(`<h2>得点・失点のパターン(振り分けた ${tagged.length} 点)</h2>
+      <div class="card"><div class="muted" style="font-size:13px">得点が多いパターン</div>${best.map(prow).join("") || `<div class="muted">まだ2回以上の得点パターンはありません</div>`}</div>
+      <div class="card"><div class="muted" style="font-size:13px">失点が多いパターン</div>${worst.map(prow).join("") || `<div class="muted">まだ2回以上の失点パターンはありません</div>`}</div>
+      <div class="card"><div class="muted" style="font-size:13px">項目ごとの得点率</div>${PT_DIMS.map(([d, label]) => dimTable(d, label)).join("")}</div>`);
+    if (best[0]) hints.push({ w: 2, text: `得点が多いパターンは「${best[0][0]}」です(得点 ${best[0][1].point}・失点 ${best[0][1].lost})。試合で意識して使うのが目安です` });
+    if (worst[0]) hints.push({ w: 3, text: `失点が多いパターンは「${worst[0][0]}」です(失点 ${worst[0][1].lost}・得点 ${worst[0][1].point})。この形の練習を入れるのが目安です` });
   }
   // 2) 失点のしるしに付いたタグ(直近5試合)
   const lostTags = {};
@@ -787,6 +838,7 @@ async function screenMatch(mid) {
         ${KIND_KEYS.map((kk) => `<button class="kbtn grow" data-kind="${kk}" style="background:${KINDS[kk].color}">${KINDS[kk].icon} ${KINDS[kk].label}</button>`).join("")}
       </div>
       <button class="btn sub block" id="fullBtn" style="margin-top:8px">⛶ 全画面でしるし</button>
+      <button class="btn sub block" id="clsBtn" style="margin-top:8px">🎯 コース・回転を付ける(1ポイントずつ)</button>
       <div id="markForm" hidden>
         <label id="markAt"></label>
         <input id="markText" placeholder="ひとことコメント">
@@ -814,6 +866,7 @@ async function screenMatch(mid) {
       await addMarker(pending, text.value, sel, "note"); form.hidden = true; drawMarkers(); toast("しるしを付けました");
     };
     document.getElementById("fullBtn").onclick = enterFull;
+    document.getElementById("clsBtn").onclick = enterClassify;
     player.onReady(drawTimeline);
   }
   function markToast(t, kind) {
@@ -867,6 +920,40 @@ async function screenMatch(mid) {
     if (u) u.onclick = async () => { m.markers = undoMarks; undoMarks = null; await save(); toast("元に戻しました"); after(); };
   }
   // ---- 全画面でしるし(動画の要素は動かさず CSS で全画面にする:YouTube の読み込み直しを防ぐ)
+  // ---- 振り分けモード:得点・失点のしるしを1ポイントずつ再生して、どの球・コース・長さ・回転を付ける
+  function enterClassify() {
+    const pts = () => [...m.markers].filter((k) => markKind(k) !== "note").sort((a, b) => a.t - b.t);
+    if (!pts().length) return toast("先に得点・失点のしるしを付けてください");
+    const vw = document.getElementById("vwrap");
+    vw.classList.add("vfull"); document.body.classList.add("noscroll", "classify");
+    const bar = document.createElement("div"); bar.id = "clsBar"; document.body.appendChild(bar);
+    const done = (k) => PT_DIMS.some(([d]) => k[d]);
+    let i = Math.max(0, pts().findIndex((k) => !done(k)));
+    const exit = () => { stopSegment(); bar.remove(); vw.classList.remove("vfull"); document.body.classList.remove("noscroll", "classify"); drawMarkers(); };
+    const go = (j) => { const L = pts(); i = Math.max(0, Math.min(L.length - 1, j)); draw(); playPoint(L[i]); };
+    function draw() {
+      const L = pts(), k = L[i], nDone = L.filter(done).length;
+      bar.innerHTML = `
+        <div class="row"><button class="btn sub" id="cExit">× 終了</button>
+          <b class="grow" style="text-align:center">${i + 1} / ${L.length} 点目 ${kindBadge(markKind(k))}<span style="font-size:13px">${fmt(k.t)}</span></b>
+          <span style="font-size:12px;color:#cbd5e1">付けた ${nDone}</span></div>
+        ${PT_DIMS.map(([d, label, opts]) => `<div class="dimh">${label}</div><div class="chips" style="margin:0">${opts.map(([v, l]) => `<button class="chip ${k[d] === v ? "on" : ""}" data-d="${d}" data-v="${v}">${l}</button>`).join("")}</div>`).join("")}
+        <div class="row" style="margin-top:12px">
+          <button class="btn sub grow" id="cPrev">◀ 前</button>
+          <button class="btn sub grow" id="cAgain">↻ もう一度</button>
+          <button class="btn grow" id="cNext">${i + 1 < L.length ? "次へ ▶" : "おわり"}</button></div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:6px">前のしるし〜このしるしを再生して止まります。わからない項目は空けたままで大丈夫です。</div>`;
+      bar.querySelector("#cExit").onclick = exit;
+      bar.querySelectorAll("[data-d]").forEach((b) => (b.onclick = async () => {
+        const d = b.dataset.d; k[d] = k[d] === b.dataset.v ? "" : b.dataset.v;
+        await save(); draw();
+      }));
+      bar.querySelector("#cPrev").onclick = () => go(i - 1);
+      bar.querySelector("#cAgain").onclick = () => playPoint(L[i]);
+      bar.querySelector("#cNext").onclick = () => (i + 1 < L.length ? go(i + 1) : (toast(`${L.filter(done).length} / ${L.length} 点に付けました`), exit()));
+    }
+    go(i);
+  }
   function enterFull() {
     const vw = document.getElementById("vwrap");
     vw.classList.add("vfull"); document.body.classList.add("noscroll");
@@ -986,7 +1073,7 @@ async function screenMatch(mid) {
     document.getElementById("tally").innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
       <div class="marker" style="flex-wrap:wrap"><button class="time" data-t="${k.t}">▶ ${fmt(k.t)}</button>
-        <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${kindBadge(markKind(k))}${esc(markLabel(k))}
+        <button class="grow" data-edit="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${kindBadge(markKind(k))}${esc(markLabel(k))}${patternLabel(k) ? ` <span class="muted" style="font-size:13px">${esc(patternLabel(k))}</span>` : ""}
           <br>${(k.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}<span class="muted" style="font-size:12px">${editingMarker === k.id ? "" : "編集 ✎"}</span></button>
         <button class="chip" data-rm="${k.id}">削除</button>
         ${editingMarker === k.id ? `<div style="width:100%;margin-top:6px">
@@ -1549,7 +1636,7 @@ async function screenReview(mid) {
     const list = !filter ? m.markers : filter.startsWith("k:") ? m.markers.filter((k) => markKind(k) === filter.slice(2)) : m.markers.filter((k) => (k.tags || []).includes(filter));
     document.getElementById("mlist").innerHTML = list.length ? list.map((k) => `
       <div class="marker"><button class="time" data-t="${k.t}">${fmt(k.t)}</button>
-      <span class="grow">${kindBadge(markKind(k))}${esc(markLabel(k))}${(k.tags || []).length ? "<br>" + k.tags.map((t) => `<span class="tag t">${esc(t)}</span>`).join("") : ""}</span>
+      <span class="grow">${kindBadge(markKind(k))}${esc(markLabel(k))}${patternLabel(k) ? ` <span class="muted" style="font-size:13px">${esc(patternLabel(k))}</span>` : ""}${(k.tags || []).length ? "<br>" + k.tags.map((t) => `<span class="tag t">${esc(t)}</span>`).join("") : ""}</span>
       <button class="chip" data-task="${esc(markLabel(k) || `${KINDS[markKind(k)].label}の場面(${fmt(k.t)})`)}">練習に追加</button></div>`).join("") : `<span class="muted">しるしはまだありません</span>`;
     document.querySelectorAll("#tagFilter [data-f]").forEach((b) => (b.onclick = () => { filter = b.dataset.f || null; drawList(); }));
     document.querySelectorAll("#mlist [data-t]").forEach((b) => (b.onclick = () => {
