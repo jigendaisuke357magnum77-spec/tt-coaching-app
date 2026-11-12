@@ -269,7 +269,7 @@ async function screenPlayer(pid, tab = "matches") {
   } else if (tab === "practices") {
     body = ps.length ? ps.map((x) => `
       <button class="list-item" data-go="#/pr/${x.id}">
-        <span class="grow"><b>${esc(x.date)}</b><br><span class="muted">${esc(x.items.map((i) => i.kind).filter(Boolean).join("、") || "(項目なし)")}</span></span>
+        <span class="grow"><b>${esc(x.date)}</b> ${x.videoId ? "🎥" : x.youtubeId ? "▶ YouTube" : ""}<br><span class="muted">${esc(x.items.map((i) => i.kind).filter(Boolean).join("、") || "(項目なし)")}${(x.marks || []).length ? ` ・ できた ${x.marks.filter((k) => k.kind === "ok").length}・課題 ${x.marks.filter((k) => k.kind === "ng").length}` : ""}</span></span>
         <span class="muted">${x.items.reduce((s, i) => s + (+i.minutes || 0), 0)}分 ›</span>
       </button>`).join("") : `<div class="empty">練習の記録はまだありません</div>`;
     body += `<button class="btn fab" id="add">+ 今日の練習</button>`;
@@ -1183,9 +1183,26 @@ async function screenPractice(xid) {
   setHeader("練習記録", "#/p/" + x.playerId + "/practices");
   const tasks = (await all("tasks")).filter((t) => t.playerId === x.playerId && !t.done);
   const save = () => put("practices", x);
+  x.marks ||= [];
+  // 画面の骨組み:動画の部分は一度だけ作る(作り直すと YouTube が読み込み直しになるため)
+  $app.innerHTML = `
+    <div class="card"><label style="margin-top:0">日付</label><input type="date" id="date" value="${esc(x.date)}"></div>
+    <div id="pmenu"></div>
+    <h2>練習動画</h2>
+    <div class="card" id="pvbox"></div>
+    <h2 id="pmcount">練習動画のしるし</h2>
+    <div class="card" id="psum"></div>
+    <div class="card" id="pmlist"></div>
+    <button class="btn danger block" id="delDay" style="margin-top:28px">この日の練習記録を削除</button>`;
+  document.getElementById("date").onchange = (e) => { x.date = e.target.value; save(); };
+  document.getElementById("delDay").onclick = async () => {
+    if (!confirm("この日の練習記録と練習動画を削除します。よろしいですか?(YouTube 上の動画は消えません)")) return;
+    if (x.videoId) await del("videos", x.videoId);
+    await del("practices", x.id); location.hash = "#/p/" + x.playerId + "/practices";
+  };
+  const menuBox = document.getElementById("pmenu");
   const draw = () => {
-    $app.innerHTML = `
-      <div class="card"><label style="margin-top:0">日付</label><input type="date" id="date" value="${esc(x.date)}"></div>
+    menuBox.innerHTML = `
       ${tasks.length ? `<h2>試合の振り返りから出た課題(タップでメニューに追加)</h2>
         <div class="chips">${tasks.map((t) => `<button class="chip" data-task="${t.id}">＋ ${esc(t.text)}</button>`).join("")}</div>` : ""}
       <h2>メニュー</h2>
@@ -1201,28 +1218,154 @@ async function screenPractice(xid) {
           ${i.focus ? `<div class="muted" style="margin-top:4px">課題: ${esc(i.focus)}</div>` : ""}
           <input data-k="memo" placeholder="ひとことメモ" style="margin-top:6px" value="${esc(i.memo)}">
         </div>`).join("") : `<span class="muted">「+ 種目を追加」でメニューを登録します</span>`}</div>
-      <button class="btn block" id="addItem">+ 種目を追加</button>
-      <button class="btn danger block" id="delDay" style="margin-top:28px">この日の練習記録を削除</button>`;
-    document.getElementById("date").onchange = (e) => { x.date = e.target.value; save(); };
+      <button class="btn block" id="addItem">+ 種目を追加</button>`;
     document.getElementById("addItem").onclick = () => { x.items.push({ id: uid(), kind: "", minutes: "", stars: 0, memo: "" }); save(); draw(); };
-    $app.querySelectorAll("[data-task]").forEach((b) => (b.onclick = async () => {
+    menuBox.querySelectorAll("[data-task]").forEach((b) => (b.onclick = async () => {
       const t = tasks.find((y) => y.id === b.dataset.task);
       x.items.push({ id: uid(), kind: "", minutes: "", stars: 0, memo: "", focus: t.text });
       t.done = true; await put("tasks", t); tasks.splice(tasks.indexOf(t), 1);
       await save(); draw(); toast("課題をメニューに追加しました");
     }));
-    $app.querySelectorAll("[data-i]").forEach((row) => {
+    menuBox.querySelectorAll("[data-i]").forEach((row) => {
       const i = x.items[+row.dataset.i];
-      row.querySelectorAll("[data-k]").forEach((el) => (el.onchange = () => { i[el.dataset.k] = el.value; save(); }));
+      row.querySelectorAll("[data-k]").forEach((el) => (el.onchange = () => { i[el.dataset.k] = el.value; save(); if (el.dataset.k === "kind") drawVideoMarks(); }));
       row.querySelectorAll("[data-star]").forEach((b) => (b.onclick = () => { i.stars = +b.dataset.star === i.stars ? 0 : +b.dataset.star; save(); draw(); }));
-      row.querySelector("[data-rm]").onclick = () => { x.items.splice(+row.dataset.i, 1); save(); draw(); };
+      row.querySelector("[data-rm]").onclick = () => { x.items.splice(+row.dataset.i, 1); save(); draw(); drawVideoMarks(); };
     });
-    document.getElementById("delDay").onclick = async () => {
-      if (!confirm("この日の練習記録を削除します。よろしいですか?")) return;
-      await del("practices", x.id); location.hash = "#/p/" + x.playerId + "/practices";
-    };
   };
   draw();
+
+  // ---------- 練習動画としるし(できた / 課題 / その他) ----------
+  const pvbox = document.getElementById("pvbox");
+  pvbox.innerHTML = `
+    <input type="file" id="pfile" accept="video/*" hidden>
+    <div id="pvwrap"></div>
+    <div id="pvctl"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn sub grow" id="ppick">${x.videoId ? "端末の動画を差し替え" : "端末の動画を選ぶ"}</button>
+      <button class="btn sub grow" id="pytBtn">${x.youtubeId ? "YouTubeを変更" : "YouTubeのURL"}</button>
+    </div>
+    <div id="pytForm" hidden>
+      <label>YouTube の動画の URL</label>
+      <div class="row"><input id="pytUrl" class="grow" inputmode="url" placeholder="https://youtu.be/…" value="${x.youtubeId ? "https://youtu.be/" + esc(x.youtubeId) : ""}"><button class="btn" id="pytSet">読み込む</button></div>
+      <p class="muted" style="margin:6px 0 0">「非公開」の動画は再生できません。「限定公開」にしてください。</p>
+    </div>
+    <p class="muted" style="margin:8px 0 0">その日の練習を通しで撮った動画を1本付けて、「できた」「課題」の場面にしるしを付けます。</p>`;
+  const pfile = document.getElementById("pfile");
+  document.getElementById("ppick").onclick = () => pfile.click();
+  pfile.onchange = async () => {
+    const f = pfile.files[0]; if (!f) return;
+    toast("動画を保存しています…");
+    const vid = x.videoId || uid();
+    try { await put("videos", { id: vid, blob: f, name: f.name, type: f.type }); }
+    catch (e) { alert("動画を保存できませんでした(端末の空き容量を確認してください)\n" + e); return; }
+    x.videoId = vid; x.youtubeId = null; await save(); toast("保存しました"); render();
+  };
+  document.getElementById("pytBtn").onclick = () => { const f = document.getElementById("pytForm"); f.hidden = !f.hidden; };
+  document.getElementById("pytSet").onclick = async () => {
+    const id = parseYouTube(document.getElementById("pytUrl").value);
+    if (!id) return alert("YouTube の動画の URL を読み取れませんでした。");
+    if (x.videoId) {
+      if (!confirm("保存している端末の動画を削除して、YouTube の動画に切り替えます。よろしいですか?(しるしは残ります)")) return;
+      await del("videos", x.videoId); x.videoId = null;
+    }
+    x.youtubeId = id; await save(); render();
+  };
+  const PK = { ok: { label: "できた", icon: "○", color: "#16a34a" }, ng: { label: "課題", icon: "✕", color: "#e11d48" }, note: { label: "その他", icon: "△", color: "#d97706" } };
+  const pBadge = (k) => `<span class="kb" style="background:${PK[k].color}">${PK[k].icon} ${PK[k].label}</span>`;
+  const itemNames = () => [...new Set(x.items.map((i) => i.kind).filter(Boolean))];
+  let curItem = itemNames()[0] || "", pEdit = null;
+  const player = await mountPlayer(x, document.getElementById("pvwrap"));
+  const addMark = async (t, kind, text) => {
+    x.marks.push({ id: uid(), t, kind, item: curItem, text: (text || "").trim(), c: Date.now() });
+    x.marks.sort((a, b) => a.t - b.t); await save(); drawVideoMarks();
+  };
+  function drawCtl() {
+    const ctl = document.getElementById("pvctl"); if (!player) { ctl.innerHTML = ""; return; }
+    const names = itemNames();
+    ctl.innerHTML = `
+      <div class="row" style="margin-top:10px;flex-wrap:wrap"><span class="muted">いまの種目</span>
+        ${names.length ? names.map((n) => `<button class="chip ${curItem === n ? "on" : ""}" data-cur="${esc(n)}">${esc(n)}</button>`).join("") : `<span class="muted" style="font-size:13px">(上のメニューに種目を入れると選べます)</span>`}
+        ${names.length ? `<button class="chip ${curItem === "" ? "on" : ""}" data-cur="">なし</button>` : ""}</div>
+      <div class="row" style="margin-top:10px">
+        ${["ok", "ng", "note"].map((k) => `<button class="kbtn grow" data-pk="${k}" style="background:${PK[k].color}">${PK[k].icon} ${PK[k].label}</button>`).join("")}
+      </div>
+      <div id="pnote" hidden style="margin-top:8px">
+        <label id="pnoteAt"></label>
+        <div class="row"><input id="pnoteText" class="grow" placeholder="ひとこと(例 打点が遅い)"><button class="btn" id="pnoteSave">付ける</button></div>
+      </div>`;
+    ctl.querySelectorAll("[data-cur]").forEach((b) => (b.onclick = () => { curItem = b.dataset.cur; drawCtl(); }));
+    let at = 0;
+    ctl.querySelectorAll("[data-pk]").forEach((b) => (b.onclick = async () => {
+      const k = b.dataset.pk, t = player.time();
+      if (k !== "note") { await addMark(t, k, ""); return toast(`${fmt(t)} ${PK[k].label}${curItem ? "(" + curItem + ")" : ""}`); }
+      player.pause(); at = t;
+      const box = document.getElementById("pnote"); box.hidden = false;
+      document.getElementById("pnoteAt").textContent = `${fmt(at)} その他${curItem ? "(" + curItem + ")" : ""}`;
+      document.getElementById("pnoteText").value = ""; document.getElementById("pnoteText").focus();
+    }));
+    document.getElementById("pnoteSave").onclick = async () => {
+      await addMark(at, "note", document.getElementById("pnoteText").value);
+      document.getElementById("pnote").hidden = true; player.play(); toast("しるしを付けました");
+    };
+  }
+  function drawVideoMarks() {
+    drawCtl();
+    const M = x.marks;
+    document.getElementById("pmcount").textContent = `練習動画のしるし(${M.length})`;
+    // 種目ごとの「できた / 課題」の数
+    const groups = [...new Set(M.map((k) => k.item || ""))];
+    document.getElementById("psum").innerHTML = M.length ? `<div class="muted" style="margin-bottom:4px">種目ごとの できた / 課題</div>` + groups.map((g) => {
+      const ok = M.filter((k) => (k.item || "") === g && k.kind === "ok").length, ng = M.filter((k) => (k.item || "") === g && k.kind === "ng").length;
+      return `<div class="row" style="padding:4px 0"><b class="grow">${esc(g || "種目なし")}</b>
+        <span class="kb" style="background:${PK.ok.color}">○ ${ok}</span><span class="kb" style="background:${PK.ng.color}">✕ ${ng}</span></div>`;
+    }).join("") + (M.some((k) => k.kind === "ng" && !k.task) ? `<button class="btn sub block" id="ngToTasks">「課題」のしるしを、まとめて課題リストに入れる</button>` : "")
+      : `<span class="muted">${player ? "再生しながら「できた」「課題」を押すと、その時間にしるしが付きます" : "練習動画を付けると、しるしを付けられます"}</span>`;
+    const list = document.getElementById("pmlist");
+    list.hidden = !M.length;
+    list.innerHTML = M.map((k) => `
+      <div class="marker" style="flex-wrap:wrap"><button class="time" data-pt="${k.id}">▶ ${fmt(k.t)}</button>
+        <button class="grow" data-pe="${k.id}" style="background:none;border:0;padding:0;text-align:left;color:var(--ink)">${pBadge(k.kind)}${k.item ? `<span class="tag t">${esc(k.item)}</span>` : ""}${esc(k.text)}
+          ${k.task ? `<span class="muted" style="font-size:12px">課題リスト済み</span>` : ""}<br><span class="muted" style="font-size:12px">${pEdit === k.id ? "" : "編集 ✎"}</span></button>
+        ${k.kind === "ng" && !k.task ? `<button class="chip" data-ptask="${k.id}">課題リストへ</button>` : ""}
+        <button class="chip" data-prm="${k.id}">削除</button>
+        ${pEdit === k.id ? `<div style="width:100%;margin-top:6px">
+          <div class="chips">${["ok", "ng", "note"].map((kk) => `<button class="chip ${k.kind === kk ? "on" : ""}" data-pkk="${kk}">${PK[kk].icon} ${PK[kk].label}</button>`).join("")}</div>
+          <div class="chips">${[...itemNames(), ""].map((n) => `<button class="chip ${(k.item || "") === n ? "on" : ""}" data-pit="${esc(n)}">${esc(n || "種目なし")}</button>`).join("")}</div>
+          <div class="row" style="margin-top:6px"><input class="grow" id="ptext" placeholder="ひとこと(何が課題か)" value="${esc(k.text)}"><button class="chip" id="ptextSave">保存</button></div></div>` : ""}
+      </div>`).join("");
+    const cur = () => x.marks.find((k) => k.id === pEdit);
+    list.querySelectorAll("[data-pt]").forEach((b) => (b.onclick = () => {
+      if (!player) return toast("動画が登録されていません");
+      const k = x.marks.find((m2) => m2.id === b.dataset.pt);
+      player.seek(Math.max(0, k.t - 4)); player.el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }));
+    list.querySelectorAll("[data-pe]").forEach((b) => (b.onclick = () => { pEdit = pEdit === b.dataset.pe ? null : b.dataset.pe; drawVideoMarks(); }));
+    list.querySelectorAll("[data-pkk]").forEach((b) => (b.onclick = async () => { cur().kind = b.dataset.pkk; await save(); drawVideoMarks(); }));
+    list.querySelectorAll("[data-pit]").forEach((b) => (b.onclick = async () => { cur().item = b.dataset.pit; await save(); drawVideoMarks(); }));
+    const ts = document.getElementById("ptextSave");
+    if (ts) ts.onclick = async () => { cur().text = document.getElementById("ptext").value.trim(); await save(); toast("保存しました"); drawVideoMarks(); };
+    list.querySelectorAll("[data-prm]").forEach((b) => (b.onclick = async () => { x.marks = x.marks.filter((k) => k.id !== b.dataset.prm); await save(); drawVideoMarks(); }));
+    const toTask = async (k) => {
+      const text = `${k.item ? k.item + ":" : ""}${k.text || "練習動画の課題の場面"}`;
+      await put("tasks", { id: uid(), playerId: x.playerId, text, source: `${x.date} の練習動画(${fmt(k.t)})から`, practiceId: x.id, done: false, created: Date.now() });
+      k.task = true;
+    };
+    list.querySelectorAll("[data-ptask]").forEach((b) => (b.onclick = async () => {
+      const k = x.marks.find((m2) => m2.id === b.dataset.ptask);
+      if (!k.text && !confirm("ひとことが空です。このまま課題リストに入れますか?(「編集 ✎」で何が課題かを書けます)")) return;
+      await toTask(k); await save(); drawVideoMarks(); toast("課題リストに入れました(次の練習で使えます)");
+    }));
+    const all2 = document.getElementById("ngToTasks");
+    if (all2) all2.onclick = async () => {
+      const ng = x.marks.filter((k) => k.kind === "ng" && !k.task);
+      if (!ng.length) return toast("課題リストに入れていない「課題」はありません");
+      if (!confirm(`「課題」のしるし ${ng.length} 個を課題リストに入れます。よろしいですか?`)) return;
+      for (const k of ng) await toTask(k);
+      await save(); drawVideoMarks(); toast(`${ng.length} 個を課題リストに入れました`);
+    };
+  }
+  drawVideoMarks();
 }
 
 // ---------- データ管理(バックアップ) ----------
