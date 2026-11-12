@@ -61,7 +61,7 @@
   .chip.pt { min-width: 40px; padding: 7px 0; text-align: center; font-variant-numeric: tabular-nums; }
   .chip { border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 99px; padding: 5px 11px; font-size: 14px; }
   .tabs { display: flex; gap: 6px; margin: 4px 0 12px; }
-  .tabs button { flex: 1; padding: 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .tabs button { flex: 1; padding: 9px 2px; font-size: 14px; white-space: nowrap; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
   .tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   video { width: 100%; border-radius: 10px; background: #000; max-height: 60vh; }
   .marker { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -134,6 +134,10 @@
   input[type=range] { padding: 0; border: 0; background: none; }
   .remind { border-left: 6px solid var(--accent); }
   .remind-text { font-size: 22px; font-weight: 700; line-height: 1.4; margin: 6px 0 4px; }
+  .meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin: 6px 0 2px; }
+  .meter i { display: block; height: 100%; }
+  .trow { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .trow:last-child { border-bottom: 0; }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -150,14 +154,14 @@
 <script>
 "use strict";
 // ---------- 保存(すべて端末内のIndexedDB。外部送信はしない) ----------
-const DB_NAME = "ttcoach", DB_VER = 4;
+const DB_NAME = "ttcoach", DB_VER = 5;
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
     const r = indexedDB.open(DB_NAME, DB_VER);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings", "notes", "opponents"]) {
+      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings", "notes", "opponents", "gear"]) {
         if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" });
       }
     };
@@ -232,7 +236,7 @@ function revokeVideo() { if (currentUrl) { URL.revokeObjectURL(currentUrl); curr
 // ---------- 画面切り替え ----------
 const routes = [
   [/^#?\/?$/, screenPlayers],
-  [/^#\/p\/([^/]+)(?:\/(notes|matches|practices|tasks))?$/, screenPlayer],
+  [/^#\/p\/([^/]+)(?:\/(notes|matches|practices|tasks|trend|gear))?$/, screenPlayer],
   [/^#\/q\/([^/]+)(?:\/([^/]+))?$/, screenQuick],
   [/^#\/m\/([^/]+)$/, screenMatch],
   [/^#\/r\/([^/]+)$/, screenReview],
@@ -296,7 +300,8 @@ async function screenPlayer(pid, tab = "notes") {
   const p = await get("players", pid);
   if (!p) return (location.hash = "#/");
   setHeader(p.nickname, "#/");
-  const [matches, practices, tasks, notes] = await Promise.all([all("matches"), all("practices"), all("tasks"), all("notes")]);
+  const [matches, practices, tasks, notes, gearAll] = await Promise.all([all("matches"), all("practices"), all("tasks"), all("notes"), all("gear")]);
+  const gear = gearAll.filter((g) => g.playerId === pid);
   const ns = notes.filter((n) => n.playerId === pid).sort((a, b) => b.date.localeCompare(a.date) || (b.created || 0) - (a.created || 0));
   const ms = matches.filter((m) => m.playerId === pid).sort((a, b) => b.date.localeCompare(a.date) || b.created - a.created);
   const ps = practices.filter((x) => x.playerId === pid).sort((a, b) => b.date.localeCompare(a.date));
@@ -331,6 +336,10 @@ async function screenPlayer(pid, tab = "notes") {
         <span class="muted">${x.items.reduce((s, i) => s + (+i.minutes || 0), 0)}分 ›</span>
       </button>`).join("") : `<div class="empty">練習の記録はまだありません</div>`;
     body += `<button class="btn fab" id="add">+ 今日の練習</button>`;
+  } else if (tab === "trend") {
+    body = trendHTML(ms, ps, ns, ts);
+  } else if (tab === "gear") {
+    body = gearHTML(p, gear, activityDays(pid, ps, ms, ns, p.sessionMin || 120));
   } else {
     body = ts.length ? `<div class="card">${ts.map((t) => `
       <div class="marker"><span class="grow">${esc(t.text)}<br><span class="muted">${esc(t.source || "")}</span></span>
@@ -343,7 +352,9 @@ async function screenPlayer(pid, tab = "notes") {
       <button class="${tab === "notes" ? "on" : ""}" data-go="#/p/${pid}/notes">ノート</button>
       <button class="${tab === "matches" ? "on" : ""}" data-go="#/p/${pid}/matches">試合</button>
       <button class="${tab === "practices" ? "on" : ""}" data-go="#/p/${pid}/practices">練習</button>
-      <button class="${tab === "tasks" ? "on" : ""}" data-go="#/p/${pid}/tasks">課題 ${ts.length ? `(${ts.length})` : ""}</button>
+      <button class="${tab === "tasks" ? "on" : ""}" data-go="#/p/${pid}/tasks">課題${ts.length ? `(${ts.length})` : ""}</button>
+      <button class="${tab === "trend" ? "on" : ""}" data-go="#/p/${pid}/trend">傾向</button>
+      <button class="${tab === "gear" ? "on" : ""}" data-go="#/p/${pid}/gear">用具</button>
     </div>${body}
     <button class="btn danger block" id="rename" style="margin-top:28px">ニックネーム変更・削除</button>`;
   bindGo();
@@ -358,6 +369,19 @@ async function screenPlayer(pid, tab = "notes") {
     if (!x) { x = { id: uid(), playerId: pid, date: today(), items: [], created: Date.now() }; await put("practices", x); }
     location.hash = "#/pr/" + x.id;
   };
+  $app.querySelectorAll("[data-gnew]").forEach((b) => (b.onclick = async () => {
+    const g = { id: uid(), playerId: pid, part: b.dataset.gnew, name: "", since: today(), lifeHours: "", created: Date.now() };
+    if (await editGear(g, true)) render();
+  }));
+  $app.querySelectorAll("[data-gedit]").forEach((b) => (b.onclick = async () => { if (await editGear(gear.find((g) => g.id === b.dataset.gedit), false)) render(); }));
+  $app.querySelectorAll("[data-gswap]").forEach((b) => (b.onclick = async () => {
+    const old = gear.find((g) => g.id === b.dataset.gswap);
+    const g = { id: uid(), playerId: pid, part: old.part, name: old.name, since: today(), lifeHours: old.lifeHours, created: Date.now() };
+    if (!(await editGear(g, true))) return;
+    old.until = g.since; await put("gear", old); render();
+  }));
+  const gs = document.getElementById("gsess");
+  if (gs) gs.onchange = async () => { p.sessionMin = Math.max(10, +gs.value || 120); await put("players", p); render(); };
   $app.querySelectorAll("[data-done]").forEach((b) => (b.onclick = async () => {
     const t = ts.find((y) => y.id === b.dataset.done); t.done = true; await put("tasks", t); render();
   }));
@@ -370,8 +394,116 @@ async function screenPlayer(pid, tab = "notes") {
     for (const x of ps) await del("practices", x.id);
     for (const t of tasks.filter((t) => t.playerId === pid)) await del("tasks", t.id);
     for (const n of ns) await del("notes", n.id);
+    for (const g of gear) await del("gear", g.id);
     await del("players", pid); location.hash = "#/";
   };
+}
+
+// ---------- 用具ログ(ラケット・ラバー) ----------
+const GEAR_PARTS = [["racket", "ラケット"], ["fore", "フォア面ラバー"], ["back", "バック面ラバー"]];
+// その日に練習・試合をしたか(練習記録・試合記録・30秒記録の日付)と、その日の練習時間(分)
+function activityDays(pid, ps, ms, ns, sessionMin) {
+  const days = new Map();
+  for (const x of ps) { const mins = x.items.reduce((a, i) => a + (+i.minutes || 0), 0); days.set(x.date, Math.max(days.get(x.date) || 0, mins || sessionMin)); }
+  for (const d of [...ms.map((m) => m.date), ...ns.map((n) => n.date)]) if (!days.has(d)) days.set(d, sessionMin);
+  return days;
+}
+function gearUsage(g, days) {
+  let n = 0, min = 0;
+  for (const [d, mins] of days) if (d >= g.since && (!g.until || d < g.until)) { n++; min += mins; }
+  return { n, hours: Math.round((min / 60) * 10) / 10 };
+}
+function gearHTML(p, gear, days) {
+  const cur = (part) => gear.find((g) => g.part === part && !g.until);
+  const hist = gear.filter((g) => g.until).sort((a, b) => b.until.localeCompare(a.until));
+  return `
+    ${GEAR_PARTS.map(([part, label]) => {
+      const g = cur(part);
+      if (!g) return `<div class="card"><b>${label}</b><p class="muted" style="margin:4px 0 8px">まだ登録がありません</p><button class="btn sub block" data-gnew="${part}">登録する</button></div>`;
+      const u = gearUsage(g, days), life = +g.lifeHours || 0, rate = life ? Math.min(1, u.hours / life) : 0;
+      const color = rate >= 1 ? "var(--mark)" : rate >= 0.8 ? "#d97706" : "#16a34a";
+      return `<div class="card"><div class="row"><b class="grow">${label}</b><button class="chip" data-gedit="${g.id}">編集</button></div>
+        <div style="font-size:18px;font-weight:700;margin-top:2px">${esc(g.name || "(名前なし)")}</div>
+        <div class="muted">${part === "racket" ? "使い始め" : "貼った日"} ${jpDate(g.since)} ・ 練習・試合 ${u.n} 回 ・ 推定 ${u.hours} 時間</div>
+        ${life ? `<div class="meter"><i style="width:${(rate * 100).toFixed(0)}%;background:${color}"></i></div>
+          <div class="muted" style="font-size:13px">替え時の目安 ${life} 時間 のうち ${Math.round(rate * 100)}%${rate >= 1 ? " ・ 目安を過ぎています" : rate >= 0.8 ? " ・ そろそろ替え時の目安" : ""}</div>` : `<div class="muted" style="font-size:13px">替え時の目安(時間)を「編集」で決めると、どれだけ使ったかが出ます</div>`}
+        <button class="btn sub block" data-gswap="${g.id}">${part === "racket" ? "ラケットを替えた" : "貼り替えた"}</button></div>`;
+    }).join("")}
+    <div class="card"><div class="row"><span class="grow">1回の練習時間の目安(練習記録に分がない日に使う)</span>
+      <input id="gsess" type="number" inputmode="numeric" min="10" style="width:80px" value="${p.sessionMin || 120}"><span class="muted">分</span></div>
+      <p class="muted" style="font-size:13px;margin:6px 0 0">使用時間は、練習記録・試合記録・30秒記録の日付から数えた推定です。替え時の目安は自分で決めてください。</p></div>
+    ${hist.length ? `<h2>これまでの用具</h2><div class="card">${hist.map((g) => `<div class="trow"><span class="grow">${esc(GEAR_PARTS.find(([k]) => k === g.part)[1])}:${esc(g.name || "")}</span>
+      <span class="muted" style="font-size:13px">${jpDate(g.since)}〜${jpDate(g.until)} ・ ${gearUsage(g, days).hours} 時間</span></div>`).join("")}</div>` : ""}`;
+}
+async function editGear(g, isNew) {
+  const label = GEAR_PARTS.find(([k]) => k === g.part)[1];
+  const name = prompt(`${label}の名前(例 製品名・厚さ)`, g.name || ""); if (name === null) return false;
+  const since = prompt(`${g.part === "racket" ? "使い始めた日" : "貼った日"}(例 2026-11-12)`, g.since || today()); if (since === null) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since.trim())) { alert("日付は 2026-11-12 の形で入れてください"); return false; }
+  const life = prompt(`替え時の目安(使用時間・空欄なら出さない)`, g.lifeHours || ""); if (life === null) return false;
+  g.name = name.trim(); g.since = since.trim(); g.lifeHours = life && +life > 0 ? +life : "";
+  await put("gear", g); return true;
+}
+
+// ---------- 伸びしろの傾向(AI を使わない集計) ----------
+function trendHTML(ms, ps, ns, tasks) {
+  const out = [];
+  const recentM = [...ms].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  const recentP = [...ps].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  const recentN = [...ns].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10);
+  const hints = [];
+  // 1) 得点率の推移(直近5試合)
+  const rates = recentM.map((m) => ({ m, c: tallyKinds(m.markers), r: pointRate(tallyKinds(m.markers)) })).filter((x) => x.r != null);
+  if (rates.length) {
+    const avg = Math.round(rates.reduce((a, x) => a + x.r, 0) / rates.length);
+    const newest = rates[0].r, older = rates.slice(1);
+    const olderAvg = older.length ? Math.round(older.reduce((a, x) => a + x.r, 0) / older.length) : null;
+    out.push(`<h2>得点率の推移(直近 ${rates.length} 試合)</h2><div class="card">
+      ${rates.map((x) => `<div class="trow"><span class="grow">${jpDate(x.m.date)} vs ${esc(vsLabel(x.m))}</span><b>${x.r}%</b><span class="muted" style="font-size:13px">得点${x.c.point}・失点${x.c.lost}</span></div>`).join("")}
+      <div class="muted" style="margin-top:6px">平均 ${avg}%${olderAvg != null ? ` ・ 直近の試合は、それより前の平均(${olderAvg}%)より ${newest >= olderAvg ? "+" : ""}${newest - olderAvg} ポイント` : ""}</div></div>`);
+    if (olderAvg != null && newest < olderAvg - 5) hints.push({ w: 2, text: `直近の試合の得点率(${newest}%)が、それまでの平均(${olderAvg}%)より下がっています。その試合の失点の場面を見直すのが目安です` });
+  }
+  // 2) 失点のしるしに付いたタグ(直近5試合)
+  const lostTags = {};
+  for (const m of recentM) for (const k of m.markers || []) if (markKind(k) === "lost") for (const t of k.tags || []) if (t !== "失点") lostTags[t] = (lostTags[t] || 0) + 1;
+  const lt = Object.entries(lostTags).sort((a, b) => b[1] - a[1]);
+  if (lt.length) {
+    out.push(`<h2>失点の場面に多いタグ(直近 ${recentM.length} 試合)</h2><div class="card">${lt.slice(0, 5).map(([t, n]) => `<div class="trow"><span class="grow">${esc(t)}</span><b>${n} 回</b></div>`).join("")}</div>`);
+    hints.push({ w: 3, text: `失点の場面に「${lt[0][0]}」のタグが一番多く付いています(${lt[0][1]} 回)。「${lt[0][0]}」の練習を増やすのが目安です` });
+  }
+  // 3) 練習動画の「課題」が多い種目(直近5回の練習)
+  const items = {};
+  for (const x of recentP) for (const k of x.marks || []) { const it = k.item || "種目なし"; items[it] ||= { ok: 0, ng: 0 }; if (k.kind === "ok") items[it].ok++; if (k.kind === "ng") items[it].ng++; }
+  const it = Object.entries(items).filter(([, v]) => v.ok + v.ng).sort((a, b) => b[1].ng - a[1].ng);
+  if (it.length) {
+    out.push(`<h2>練習動画の できた / 課題(直近 ${recentP.length} 回の練習)</h2><div class="card">${it.map(([n, v]) => `<div class="trow"><span class="grow">${esc(n)}</span>
+      <span class="kb" style="background:#16a34a">○ ${v.ok}</span><span class="kb" style="background:#e11d48">✕ ${v.ng}</span><span class="muted" style="font-size:13px">できた率 ${Math.round((v.ok / (v.ok + v.ng)) * 100)}%</span></div>`).join("")}</div>`);
+    const worst = it.find(([, v]) => v.ng > 0 && v.ng >= v.ok);
+    if (worst) hints.push({ w: 3, text: `練習動画では「${worst[0]}」で課題が多めです(できた ${worst[1].ok}・課題 ${worst[1].ng})。次の練習の最初にやるのが目安です` });
+  }
+  // 4) 最近やった技術・やっていない技術(30秒記録のタグ、直近10回)
+  if (recentN.length) {
+    const cnt = {}; for (const n of recentN) for (const t of n.tags || []) cnt[t] = (cnt[t] || 0) + 1;
+    const none = NOTE_TAGS.filter((t) => !cnt[t]);
+    out.push(`<h2>最近やった技術(直近 ${recentN.length} 回の記録)</h2><div class="card">
+      ${Object.entries(cnt).sort((a, b) => b[1] - a[1]).map(([t, n]) => `<div class="trow"><span class="grow">${esc(t)}</span><b>${n} 回</b></div>`).join("") || `<span class="muted">技術のタグがまだありません</span>`}
+      ${none.length ? `<div class="muted" style="margin-top:6px">しばらくやっていない:${none.map(esc).join("、")}</div>` : ""}</div>`);
+    if (none.length && recentN.length >= 3) hints.push({ w: 1, text: `直近 ${recentN.length} 回の記録で「${none[0]}」をやっていません。ときどき入れておくのが目安です` });
+    // 5) 繰り返し出てくる伸びしろ
+    const nexts = recentN.map((n) => n.next).filter(Boolean);
+    const rep = {}; for (const t of nexts) rep[t] = (rep[t] || 0) + 1;
+    const repeated = Object.entries(rep).filter(([, n]) => n >= 2);
+    out.push(`<h2>最近の「次回の伸びしろ」</h2><div class="card">${[...new Set(nexts)].slice(0, 5).map((t) => `<div class="trow"><span class="grow">${esc(t)}</span>${rep[t] >= 2 ? `<span class="kb" style="background:#d97706">${rep[t]} 回</span>` : ""}</div>`).join("")}</div>`);
+    if (repeated.length) hints.push({ w: 2, text: `「${repeated[0][0]}」が ${repeated[0][1]} 回、次回の伸びしろに出ています。練習メニューに入れて重点的に取り組むのが目安です` });
+  }
+  const open = tasks.length;
+  if (!out.length) return `<div class="empty">まだ集計できる記録がありません。<br>試合に得点・失点のしるし、練習動画に「できた・課題」、30秒記録に技術タグを付けると、ここに傾向が出ます。</div>`;
+  hints.sort((a, b) => b.w - a.w);
+  return `<div class="card remind"><div class="muted" style="font-size:13px">記録から見た「次の一手」(目安)</div>
+    <div style="font-size:17px;font-weight:700;margin-top:4px">${esc(hints[0] ? hints[0].text : "大きな偏りは見つかっていません。いまの伸びしろを続けましょう")}</div>
+    ${hints.length > 1 ? `<ul style="margin:8px 0 0;padding-left:20px;font-size:14px">${hints.slice(1, 3).map((h) => `<li>${esc(h.text)}</li>`).join("")}</ul>` : ""}
+    ${open ? `<div class="muted" style="font-size:13px;margin-top:6px">未消化の課題 ${open} 件(「課題」タブ)</div>` : ""}
+    <div class="muted" style="font-size:12px;margin-top:6px">AI は使わず、記録の数だけから出しています</div></div>` + out.join("");
 }
 
 // ---------- 対戦相手の攻略データベース(実名・チーム名。この端末の中だけに保存) ----------
@@ -1625,7 +1757,7 @@ async function screenData() {
   };
   document.getElementById("exp").onclick = async () => {
     const data = { app: "ttcoach", version: 1, exported: new Date().toISOString() };
-    for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents"]) data[s] = await all(s);
+    for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents", "gear"]) data[s] = await all(s);
     data.settings = data.settings.filter((x) => !String(x.id).startsWith("rallyEnv:"));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
@@ -1638,7 +1770,7 @@ async function screenData() {
       const data = JSON.parse(await f.files[0].text());
       if (data.app !== "ttcoach") throw new Error("このアプリのバックアップではありません");
       if (!confirm("バックアップの内容を取り込みます(同じ記録は上書き)。よろしいですか?")) return;
-      for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents"]) for (const v of data[s] || []) await put(s, v);
+      for (const s of ["players", "matches", "practices", "tasks", "settings", "notes", "opponents", "gear"]) for (const v of data[s] || []) await put(s, v);
       toast("復元しました"); location.hash = "#/";
     } catch (e) { alert("復元できませんでした: " + e.message); }
   };
