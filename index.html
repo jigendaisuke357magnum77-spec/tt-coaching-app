@@ -349,6 +349,7 @@ async function screenMatch(mid) {
     <h2 id="mcount">しるし(${m.markers.length})</h2>
     <div class="card" id="tally"></div>
     <div class="card" id="mlist"></div>
+    <div id="bulk"></div>
     <button class="btn block" data-go="#/r/${m.id}">振り返りへ ›</button>`;
   bindGo();
   for (const [id, key] of [["date", "date"], ["opp", "oppType"]]) {
@@ -448,6 +449,28 @@ async function screenMatch(mid) {
     return [prev, k.t + 1];
   }
   function playPoint(k) { const [a, b] = pointRange(k); playSegment(a, b); return [a, b]; }
+  // ---- しるしのまとめて削除(種類ごと・すべて)。直後なら元に戻せる
+  let undoMarks = null;
+  const BULK = [["all", "すべて"], ["point", "得点"], ["lost", "失点"], ["note", "その他"], ["auto", "自動検出の分"]];
+  const bulkTargets = (key) => m.markers.filter((k) => key === "all" || (key === "auto" ? k.text === "ラリー終わり(自動)" : markKind(k) === key));
+  function bulkHTML() {
+    const opts = BULK.map(([key, label]) => [key, label, bulkTargets(key).length]).filter(([, , n]) => n > 0);
+    if (!opts.length && !undoMarks) return "";
+    return `<div class="chips">${opts.map(([key, label, n]) => `<button class="chip" data-bulk="${key}" style="border-color:var(--mark)">${label}を削除(${n})</button>`).join("")}
+      ${undoMarks ? `<button class="chip on" data-bulkundo>↶ 削除を元に戻す</button>` : ""}</div>`;
+  }
+  function bindBulk(root, after) {
+    root.querySelectorAll("[data-bulk]").forEach((b) => (b.onclick = async () => {
+      const key = b.dataset.bulk, tg = bulkTargets(key), label = BULK.find((x) => x[0] === key)[1];
+      if (!tg.length) return;
+      if (!confirm(`${label}のしるし ${tg.length} 個を削除します。よろしいですか?(このあとすぐなら「元に戻す」で戻せます)`)) return;
+      undoMarks = m.markers.slice();
+      const set = new Set(tg); m.markers = m.markers.filter((k) => !set.has(k));
+      await save(); toast(`${tg.length} 個のしるしを削除しました`); after();
+    }));
+    const u = root.querySelector("[data-bulkundo]");
+    if (u) u.onclick = async () => { m.markers = undoMarks; undoMarks = null; await save(); toast("元に戻しました"); after(); };
+  }
   // ---- 全画面でしるし(動画の要素は動かさず CSS で全画面にする:YouTube の読み込み直しを防ぐ)
   function enterFull() {
     const vw = document.getElementById("vwrap");
@@ -498,8 +521,9 @@ async function screenMatch(mid) {
     const drawList = () => {
       const L = sortedMarks(), now = player.time();
       list.innerHTML = `
-        <div class="row"><b class="grow">しるし一覧(${L.length})</b><button class="btn sub" id="fsUndo">↶ 最後に付けたのを取り消す</button><button class="btn" id="fsListClose">閉じる</button></div>
+        <div class="row" style="flex-wrap:wrap"><b style="white-space:nowrap;flex:1 0 auto">しるし一覧(${L.length})</b><button class="btn sub" id="fsUndo">↶ 最後の1つを取り消す</button><button class="btn" id="fsListClose">閉じる</button></div>
         <div class="muted" style="font-size:13px;color:#cbd5e1">▶ でそのポイント(前のしるし〜このしるし)を再生して止めます。行を押すと直せます。</div>
+        <details id="fsBulk" ${undoMarks ? "open" : ""}><summary style="font-size:14px;color:#fda4af;margin-top:6px">しるしをまとめて削除</summary>${bulkHTML()}</details>
         ${L.map((k) => `<div class="fsrow ${selId === k.id ? "sel" : ""}" data-row="${k.id}">
           <button class="time" data-pp="${k.id}">▶ ${fmt(k.t)}</button>
           <button class="grow" data-sel="${k.id}" style="background:none;border:0;color:#fff;text-align:left;padding:0">${kindBadge(markKind(k))}${esc(markLabel(k))}</button>
@@ -509,6 +533,7 @@ async function screenMatch(mid) {
             <button class="chip" data-del style="border-color:#fb7185;color:#fda4af">削除</button></div>` : ""}
         </div>`).join("") || `<div class="muted">しるしはまだありません</div>`}`;
       list.querySelector("#fsListClose").onclick = () => { list.hidden = true; };
+      bindBulk(list.querySelector("#fsBulk"), () => { selId = null; count(); drawList(); });
       list.querySelector("#fsUndo").onclick = async () => {
         if (!m.markers.length) return;
         const last = m.markers.reduce((a, b) => ((b.c || 0) >= (a.c || 0) ? b : a));
@@ -559,6 +584,9 @@ async function screenMatch(mid) {
   }
   function drawMarkers() {
     document.getElementById("mcount").textContent = `しるし(${m.markers.length})`;
+    const bk = document.getElementById("bulk"), bh = bulkHTML();
+    bk.innerHTML = bh ? `<details class="card" ${undoMarks ? "open" : ""}><summary style="color:var(--mark)">しるしをまとめて削除</summary>${bh}</details>` : "";
+    bindBulk(bk, () => { editingMarker = null; drawMarkers(); });
     if (scoreMode(m) === "auto") drawScore(m, save);
     document.getElementById("tally").innerHTML = tallyHTML(tallyKinds(m.markers), scorePoints(m));
     document.getElementById("mlist").innerHTML = m.markers.length ? m.markers.map((k) => `
@@ -981,7 +1009,7 @@ function drawAutoScore(m, save, box) {
       <span class="grow" style="text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${r.cur.me} - ${r.cur.op}</span></div>` : ""}
     ${r.ignored ? `<div class="muted" style="margin-top:6px">勝敗が決まったあとのしるし ${r.ignored} 件は数えていません</div>` : ""}
     <div class="row" style="margin-top:10px"><span class="muted">試合形式</span>
-      ${[3, 5, 7].map((n) => `<button class="chip ${bo === n ? "on" : ""}" data-bo="${n}">${n}ゲームマッチ</button>`).join("")}</div>
+      ${[3, 5, 7].map((n) => `<button class="chip ${bo === n ? "on" : ""}" data-bo="${n}" style="white-space:nowrap">${n}ゲーム</button>`).join("")}</div>
     <button class="btn sub block" id="toManual">スコアを手で入力する</button>`;
   box.querySelectorAll("[data-bo]").forEach((b) => (b.onclick = () => { m.bestOf = +b.dataset.bo; save(); drawScore(m, save); refreshTally(m); }));
   document.getElementById("toManual").onclick = () => { m.scoreMode = "manual"; save(); editingGame = -1; drawScore(m, save); };
