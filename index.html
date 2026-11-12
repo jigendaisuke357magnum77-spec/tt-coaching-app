@@ -468,6 +468,32 @@ function trendHTML(ms, ps, ns, tasks) {
       <div class="muted" style="margin-top:6px">平均 ${avg}%${olderAvg != null ? ` ・ 直近の試合は、それより前の平均(${olderAvg}%)より ${newest >= olderAvg ? "+" : ""}${newest - olderAvg} ポイント` : ""}</div></div>`);
     if (olderAvg != null && newest < olderAvg - 5) hints.push({ w: 2, text: `直近の試合の得点率(${newest}%)が、それまでの平均(${olderAvg}%)より下がっています。その試合の失点の場面を見直すのが目安です` });
   }
+  // 1b) 相手の利き手別・ラバー別の得点率(すべての試合)
+  const groupRows = (groups) => groups.map(([label, list]) => {
+    const c = tallyKinds(list.flatMap((m) => m.markers || [])), r = pointRate(c);
+    const w = list.filter((m) => m.result === "win").length, l = list.filter((m) => m.result === "lose").length;
+    return { label, n: list.length, c, r, w, l };
+  }).filter((g) => g.n);
+  const allC = tallyKinds(ms.flatMap((m) => m.markers || [])), allR = pointRate(allC);
+  const rowHTML = (g) => `<div class="trow"><span class="grow">${esc(g.label)} <span class="muted" style="font-size:13px">${g.n}試合${g.w + g.l ? `・${g.w}勝${g.l}敗` : ""}</span></span>
+    <b>${g.r != null ? g.r + "%" : "—"}</b><span class="muted" style="font-size:13px">得点${g.c.point}・失点${g.c.lost}</span></div>`;
+  const weak = (gs, what) => {
+    if (allR == null) return;
+    const g = gs.filter((x) => x.r != null && x.n >= 2 && x.c.point + x.c.lost >= 10).sort((a, b) => a.r - b.r)[0];
+    if (g && g.r <= allR - 10) hints.push({ w: 2, text: `${g.label}の相手は得点率 ${g.r}% で、全体(${allR}%)より低めです。${what}対策の練習を入れるのが目安です` });
+  };
+  const hands = groupRows(HANDS.map(([v, l]) => [l, ms.filter((m) => m.oppHand === v)]));
+  if (hands.length) {
+    out.push(`<h2>相手の利き手別の得点率(全 ${ms.length} 試合)</h2><div class="card">${hands.map(rowHTML).join("")}
+      ${ms.some((m) => !m.oppHand) ? `<div class="muted" style="font-size:13px;margin-top:6px">利き手を選んでいない試合 ${ms.filter((m) => !m.oppHand).length} 件は入っていません</div>` : ""}</div>`);
+    weak(hands, "その利き手の");
+  }
+  const rubs = groupRows(RUBBERS.map((r) => [`${r}を使う`, ms.filter((m) => m.oppRubberF === r || m.oppRubberB === r)]));
+  if (rubs.length) {
+    out.push(`<h2>相手のラバー別の得点率(全 ${ms.length} 試合)</h2><div class="card">${rubs.map(rowHTML).join("")}
+      <div class="muted" style="font-size:13px;margin-top:6px">フォア面かバック面のどちらかにそのラバーを使う相手の試合をまとめています(1試合が2つに入ることがあります)</div></div>`);
+    weak(rubs, "そのラバーの");
+  }
   // 2) 失点のしるしに付いたタグ(直近5試合)
   const lostTags = {};
   for (const m of recentM) for (const k of m.markers || []) if (markKind(k) === "lost") for (const t of k.tags || []) if (t !== "失点") lostTags[t] = (lostTags[t] || 0) + 1;
