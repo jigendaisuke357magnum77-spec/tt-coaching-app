@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1673A8">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ノビシロ・ノート</title>
+<title>ノビシロノート</title>
 <meta name="apple-mobile-web-app-title" content="ノビシロノート">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
@@ -132,6 +132,8 @@
   .rbar b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--mark); }
   .prog { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; } .prog i { display: block; height: 100%; background: var(--accent); width: 0; }
   input[type=range] { padding: 0; border: 0; background: none; }
+  .remind { border-left: 6px solid var(--accent); }
+  .remind-text { font-size: 22px; font-weight: 700; line-height: 1.4; margin: 6px 0 4px; }
   .pitem { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
 </style>
 </head>
@@ -139,7 +141,7 @@
 <header>
   <button id="back" aria-label="戻る" hidden>‹ 戻る</button>
   <img class="logo" id="logo" src="icon.svg" alt="">
-  <h1 id="title">ノビシロ・ノート</h1>
+  <h1 id="title">ノビシロノート</h1>
   <button id="menu" aria-label="データ管理">⋯</button>
 </header>
 <main id="app"></main>
@@ -148,14 +150,14 @@
 <script>
 "use strict";
 // ---------- 保存(すべて端末内のIndexedDB。外部送信はしない) ----------
-const DB_NAME = "ttcoach", DB_VER = 2;
+const DB_NAME = "ttcoach", DB_VER = 3;
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
     const r = indexedDB.open(DB_NAME, DB_VER);
     r.onupgradeneeded = () => {
       const d = r.result;
-      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings"]) {
+      for (const s of ["players", "matches", "practices", "tasks", "videos", "settings", "notes"]) {
         if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: "id" });
       }
     };
@@ -178,6 +180,25 @@ const put = (s, v) => tx(s, "readwrite", (st) => st.put(v));
 const del = (s, id) => tx(s, "readwrite", (st) => st.delete(id));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+// 「11/12(木)」の形
+const jpDate = (ymd) => { if (!ymd) return ""; const d = new Date(ymd + "T00:00:00"); return `${d.getMonth() + 1}/${d.getDate()}(${"日月火水木金土"[d.getDay()]})`; };
+const NOTE_TAGS = ["サーブ", "レシーブ", "3球目攻撃", "ブロック", "フットワーク", "ゲーム練習"];
+// その選手の「次回の伸びしろ」で一番新しいもの(爆速記録の「次回の伸びしろ」と、試合の振り返りの「次の練習で意識すること」から)
+function latestNext(pid, notes, matches) {
+  const c = [
+    ...notes.filter((n) => n.playerId === pid && n.next).map((n) => ({ text: n.next, date: n.date, at: n.updated || n.created || 0, from: n.type === "match" ? "試合の記録" : "練習の記録" })),
+    ...matches.filter((m) => m.playerId === pid && (m.nextFocus || "").trim()).map((m) => ({ text: m.nextFocus.trim(), date: m.date, at: m.created || 0, from: `試合の振り返り(vs ${m.oppType || "相手"})` })),
+  ];
+  c.sort((a, b) => b.date.localeCompare(a.date) || b.at - a.at);
+  return c[0] || null;
+}
+// 監督などへ送る文章(LINE などに貼れる形)
+function shareText(lines) { return lines.filter((l) => typeof l === "string" && l !== "").join("\n"); }
+async function shareOut(text) {
+  try { if (navigator.share) { await navigator.share({ text }); return; } } catch (e) { if (e && e.name === "AbortError") return; }
+  try { await navigator.clipboard.writeText(text); toast("コピーしました。LINE などに貼り付けて送れます"); }
+  catch { prompt("この文章をコピーして送ってください", text); }
+}
 
 // ---------- 小道具 ----------
 const $app = document.getElementById("app");
@@ -187,7 +208,7 @@ function toast(msg) { const el = document.getElementById("toast"); el.textConten
 function setHeader(title, back) {
   document.getElementById("title").textContent = title;
   const b = document.getElementById("back"); b.hidden = !back; document.getElementById("logo").hidden = !!back; b.onclick = () => (location.hash = back);
-  document.title = title + " | ノビシロ・ノート";
+  document.title = title + " | ノビシロノート";
 }
 const OPP_TYPES = ["カット型", "ドライブ型", "前陣速攻型", "異質(表・粒)", "オールラウンド", "その他"];
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
@@ -198,7 +219,8 @@ function revokeVideo() { if (currentUrl) { URL.revokeObjectURL(currentUrl); curr
 // ---------- 画面切り替え ----------
 const routes = [
   [/^#?\/?$/, screenPlayers],
-  [/^#\/p\/([^/]+)(?:\/(matches|practices|tasks))?$/, screenPlayer],
+  [/^#\/p\/([^/]+)(?:\/(notes|matches|practices|tasks))?$/, screenPlayer],
+  [/^#\/q\/([^/]+)(?:\/([^/]+))?$/, screenQuick],
   [/^#\/m\/([^/]+)$/, screenMatch],
   [/^#\/r\/([^/]+)$/, screenReview],
   [/^#\/pr\/([^/]+)$/, screenPractice],
@@ -221,9 +243,19 @@ document.getElementById("menu").onclick = () => (location.hash = "#/data");
 // ---------- 4-1 選手一覧 ----------
 async function screenPlayers() {
   setHeader("選手一覧", null);
-  const [players, matches, practices] = await Promise.all([all("players"), all("matches"), all("practices")]);
+  const [players, matches, practices, notes] = await Promise.all([all("players"), all("matches"), all("practices"), all("notes")]);
   players.sort((a, b) => a.created - b.created);
+  // 前回の伸びしろリマインド(開いたらまず目に入る)
+  const remind = players.map((p) => ({ p, r: latestNext(p.id, notes, matches) }));
+  const big = players.length === 1;
   $app.innerHTML = `
+    ${remind.map(({ p, r }) => `
+      <div class="card remind">
+        <div class="muted" style="font-size:13px">${big ? "" : `<b style="color:var(--ink)">${esc(p.nickname)}</b> ・ `}前回の伸びしろ${r ? `(${jpDate(r.date)} ${esc(r.from)})` : ""}</div>
+        <div class="remind-text">${r ? esc(r.text) : `<span class="muted" style="font-size:15px">まだありません。記録の最後に「次回の伸びしろ」を1行書くと、ここに出ます</span>`}</div>
+        <button class="btn block" data-go="#/q/${p.id}">⚡ 30秒で記録する</button>
+      </div>`).join("")}
+    ${players.length ? `<h2>選手</h2>` : ""}
     ${players.length ? players.map((p) => {
       const nm = matches.filter((m) => m.playerId === p.id).length;
       const np = practices.filter((x) => x.playerId === p.id).length;
@@ -231,7 +263,7 @@ async function screenPlayers() {
         <span class="avatar">${esc(p.nickname.slice(0, 1))}</span>
         <span class="grow"><b>${esc(p.nickname)}</b><br><span class="muted">試合 ${nm} ・ 練習 ${np}</span></span><span class="muted">›</span>
       </button>`;
-    }).join("") : `<div class="empty"><img class="logo" src="icon.svg" alt=""><b style="color:var(--ink)">ノビシロ・ノートへようこそ</b><br>まだ選手がいません。<br>右下の「+ 選手」から追加してください。<br><span class="muted">※実名ではなくニックネームで登録します</span></div>`}
+    }).join("") : `<div class="empty"><img class="logo" src="icon.svg" alt=""><b style="color:var(--ink)">ノビシロノートへようこそ</b><br>まだ選手がいません。<br>右下の「+ 選手」から追加してください。<br><span class="muted">※実名ではなくニックネームで登録します</span></div>`}
     <button class="btn fab" id="add">+ 選手</button>`;
   bindGo();
   document.getElementById("add").onclick = async () => {
@@ -244,16 +276,26 @@ async function screenPlayers() {
 function bindGo() { $app.querySelectorAll("[data-go]").forEach((el) => (el.onclick = () => (location.hash = el.dataset.go))); }
 
 // ---------- 選手ページ(試合 / 練習 / 課題) ----------
-async function screenPlayer(pid, tab = "matches") {
+async function screenPlayer(pid, tab = "notes") {
   const p = await get("players", pid);
   if (!p) return (location.hash = "#/");
   setHeader(p.nickname, "#/");
-  const [matches, practices, tasks] = await Promise.all([all("matches"), all("practices"), all("tasks")]);
+  const [matches, practices, tasks, notes] = await Promise.all([all("matches"), all("practices"), all("tasks"), all("notes")]);
+  const ns = notes.filter((n) => n.playerId === pid).sort((a, b) => b.date.localeCompare(a.date) || (b.created || 0) - (a.created || 0));
   const ms = matches.filter((m) => m.playerId === pid).sort((a, b) => b.date.localeCompare(a.date) || b.created - a.created);
   const ps = practices.filter((x) => x.playerId === pid).sort((a, b) => b.date.localeCompare(a.date));
   const ts = tasks.filter((t) => t.playerId === pid && !t.done);
   let body = "";
-  if (tab === "matches") {
+  if (tab === "notes") {
+    const r = latestNext(pid, notes, matches);
+    body = (r ? `<div class="card remind"><div class="muted" style="font-size:13px">前回の伸びしろ(${jpDate(r.date)} ${esc(r.from)})</div><div class="remind-text">${esc(r.text)}</div></div>` : "") +
+      (ns.length ? ns.map((n) => `
+      <button class="list-item" data-go="#/q/${pid}/${n.id}">
+        <span class="grow"><b>${jpDate(n.date)}</b> <span class="tag">${n.type === "match" ? "試合" : "練習"}</span> ${(n.tags || []).map((t) => `<span class="tag t">${esc(t)}</span>`).join("")}
+          <br><span class="muted">意識:${esc(n.focus || "—")}</span><br><span style="font-size:14px">伸びしろ:${esc(n.next || "—")}</span></span><span class="muted">›</span>
+      </button>`).join("") : `<div class="empty">まだ記録がありません。<br>練習や試合のあとに「⚡ 30秒で記録」で、今日の意識ポイントと次回の伸びしろを残しましょう。</div>`);
+    body += `<button class="btn fab" id="add">⚡ 30秒で記録</button>`;
+  } else if (tab === "matches") {
     body = ms.length ? ms.map((m) => `
       <button class="list-item" data-go="#/r/${m.id}">
         <span class="grow"><b>${esc(m.date)}</b> vs ${esc(m.oppType || "相手")}
@@ -282,6 +324,7 @@ async function screenPlayer(pid, tab = "matches") {
   }
   $app.innerHTML = `
     <div class="tabs">
+      <button class="${tab === "notes" ? "on" : ""}" data-go="#/p/${pid}/notes">ノート</button>
       <button class="${tab === "matches" ? "on" : ""}" data-go="#/p/${pid}/matches">試合</button>
       <button class="${tab === "practices" ? "on" : ""}" data-go="#/p/${pid}/practices">練習</button>
       <button class="${tab === "tasks" ? "on" : ""}" data-go="#/p/${pid}/tasks">課題 ${ts.length ? `(${ts.length})` : ""}</button>
@@ -289,6 +332,7 @@ async function screenPlayer(pid, tab = "matches") {
     <button class="btn danger block" id="rename" style="margin-top:28px">ニックネーム変更・削除</button>`;
   bindGo();
   const add = document.getElementById("add");
+  if (add && tab === "notes") add.onclick = () => (location.hash = "#/q/" + pid);
   if (add && tab === "matches") add.onclick = async () => {
     const m = { id: uid(), playerId: pid, date: today(), oppType: "", result: "", score: "", markers: [], nextFocus: "", bodyNote: "", coachComment: "", created: Date.now() };
     await put("matches", m); location.hash = "#/m/" + m.id;
@@ -309,8 +353,69 @@ async function screenPlayer(pid, tab = "matches") {
     for (const m of ms) { if (m.videoId) await del("videos", m.videoId); await del("matches", m.id); }
     for (const x of ps) await del("practices", x.id);
     for (const t of tasks.filter((t) => t.playerId === pid)) await del("tasks", t.id);
+    for (const n of ns) await del("notes", n.id);
     await del("players", pid); location.hash = "#/";
   };
+}
+
+// ---------- 30秒の爆速記録(練習/試合・今日の意識ポイント・次回の伸びしろ) ----------
+async function screenQuick(pid, nid) {
+  const p = await get("players", pid);
+  if (!p) return (location.hash = "#/");
+  const [notes, matches, tags0] = await Promise.all([all("notes"), all("matches"), getTags()]);
+  let n = nid ? await get("notes", nid) : null;
+  const isNew = !n;
+  const prev = latestNext(pid, notes.filter((x) => x.id !== nid), matches);
+  // 新しい記録は「前回の伸びしろ」を今日の意識ポイントに入れておく(そのまま使うか書き換える)
+  n ||= { id: uid(), playerId: pid, date: today(), type: "practice", focus: prev ? prev.text : "", next: "", tags: [], memo: "", created: Date.now() };
+  setHeader(isNew ? "30秒で記録" : "記録", "#/p/" + pid + "/notes");
+  const allTags = [...new Set([...NOTE_TAGS, ...tags0, ...(n.tags || [])])];
+  $app.innerHTML = `
+    <div class="card">
+      <div class="row"><input type="date" id="qdate" class="grow" value="${esc(n.date)}">
+        <div class="tabs" style="margin:0;flex:none">
+          <button data-type="practice" class="${n.type === "practice" ? "on" : ""}" style="padding:8px 14px">練習</button>
+          <button data-type="match" class="${n.type === "match" ? "on" : ""}" style="padding:8px 14px">試合</button></div></div>
+      <label>今日の意識ポイント(1行)</label>
+      <input id="qfocus" maxlength="60" placeholder="例 サーブのあとすぐ基本姿勢に戻る" value="${esc(n.focus)}">
+      ${isNew && prev ? `<div class="muted" style="font-size:12px;margin-top:2px">前回の伸びしろを入れてあります。違えば書き換えてください</div>` : ""}
+      <label>やった技術(タップで選ぶ・いくつでも)</label>
+      <div class="chips" id="qtags">${allTags.map((t) => `<button class="chip ${(n.tags || []).includes(t) ? "on" : ""}" data-qt="${esc(t)}">${esc(t)}</button>`).join("")}</div>
+      <label>次回の伸びしろ(1行・必須)</label>
+      <input id="qnext" maxlength="60" placeholder="例 下回転サーブからの3球目を先に打つ" value="${esc(n.next)}">
+      <label>メモ(なくてもよい)</label>
+      <textarea id="qmemo" placeholder="キーボードのマイクで話して入力もできます">${esc(n.memo)}</textarea>
+      <button class="btn block" id="qsave">保存する</button>
+      <button class="btn sub block" id="qshare">📤 監督に送る(LINE など)</button>
+      ${isNew ? "" : `<button class="btn danger block" id="qdel" style="margin-top:20px">この記録を削除</button>`}
+    </div>`;
+  $app.querySelectorAll("[data-type]").forEach((b) => (b.onclick = () => { n.type = b.dataset.type; $app.querySelectorAll("[data-type]").forEach((c) => c.classList.toggle("on", c === b)); }));
+  $app.querySelectorAll("[data-qt]").forEach((b) => (b.onclick = () => b.classList.toggle("on")));
+  const collect = () => {
+    n.date = document.getElementById("qdate").value || today();
+    n.focus = document.getElementById("qfocus").value.trim();
+    n.next = document.getElementById("qnext").value.trim();
+    n.memo = document.getElementById("qmemo").value.trim();
+    n.tags = [...$app.querySelectorAll("[data-qt].on")].map((b) => b.dataset.qt);
+  };
+  const saveNote = async () => {
+    collect();
+    if (!n.next) { document.getElementById("qnext").focus(); toast("「次回の伸びしろ」を1行書いてください"); return false; }
+    n.updated = Date.now(); await put("notes", n); return true;
+  };
+  document.getElementById("qsave").onclick = async () => { if (await saveNote()) { toast("保存しました"); location.hash = "#/p/" + pid + "/notes"; } };
+  document.getElementById("qshare").onclick = async () => {
+    if (!(await saveNote())) return;
+    await shareOut(shareText([
+      `【ノビシロノート】${jpDate(n.date)} ${n.type === "match" ? "試合" : "練習"} ${p.nickname}`,
+      n.focus && `今日の意識:${n.focus}`,
+      n.tags.length && `やった技術:${n.tags.join("、")}`,
+      `次回の伸びしろ:${n.next}`,
+      n.memo && `メモ:${n.memo}`,
+    ]));
+  };
+  const qd = document.getElementById("qdel");
+  if (qd) qd.onclick = async () => { if (!confirm("この記録を削除します。よろしいですか?")) return; await del("notes", n.id); location.hash = "#/p/" + pid + "/notes"; };
 }
 
 // ---------- 4-2 試合記録(動画にしるし) ----------
@@ -1135,6 +1240,7 @@ async function screenReview(mid) {
     <div class="card"><textarea id="bodyNote" placeholder="重心、体の使い方など">${esc(m.bodyNote)}</textarea></div>
     <h2>指導者からのコメント</h2>
     <div class="card"><textarea id="coachComment" placeholder="指導者が選手へ返すコメント">${esc(m.coachComment)}</textarea></div>
+    <button class="btn sub block" id="shareMatch" style="margin-top:20px">📤 この試合の振り返りを監督に送る(LINE など)</button>
     <button class="btn danger block" id="delMatch" style="margin-top:28px">この試合記録を削除</button>`;
   bindGo();
   for (const key of ["nextFocus", "bodyNote", "coachComment"]) {
@@ -1169,6 +1275,17 @@ async function screenReview(mid) {
   };
   drawList();
   document.getElementById("focusTask").onclick = () => addTask(m.nextFocus || "");
+  document.getElementById("shareMatch").onclick = async () => {
+    const pl = await get("players", m.playerId), c = tallyKinds(m.markers), rate = pointRate(c);
+    const fresh = await get("matches", m.id) || m;
+    await shareOut(shareText([
+      `【ノビシロノート】${jpDate(fresh.date)} 試合 ${pl ? pl.nickname : ""} vs ${fresh.oppType || "相手"}`,
+      fresh.score && `スコア:${fresh.score}${fresh.result ? (fresh.result === "win" ? " 勝ち" : " 負け") : ""}`,
+      (c.point + c.lost) && `得点 ${c.point}・失点 ${c.lost}${rate != null ? `(得点率 ${rate}%)` : ""}`,
+      (fresh.nextFocus || "").trim() && `次の練習で意識すること:${fresh.nextFocus.trim()}`,
+      (fresh.bodyNote || "").trim() && `身体操作メモ:${fresh.bodyNote.trim()}`,
+    ]));
+  };
   document.getElementById("delMatch").onclick = async () => {
     if (!confirm("この試合記録と動画を削除します。よろしいですか?(YouTube 上の動画は消えません)")) return;
     if (m.videoId) await del("videos", m.videoId);
@@ -1404,7 +1521,7 @@ async function screenData() {
   };
   document.getElementById("exp").onclick = async () => {
     const data = { app: "ttcoach", version: 1, exported: new Date().toISOString() };
-    for (const s of ["players", "matches", "practices", "tasks", "settings"]) data[s] = await all(s);
+    for (const s of ["players", "matches", "practices", "tasks", "settings", "notes"]) data[s] = await all(s);
     data.settings = data.settings.filter((x) => !String(x.id).startsWith("rallyEnv:"));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
@@ -1417,7 +1534,7 @@ async function screenData() {
       const data = JSON.parse(await f.files[0].text());
       if (data.app !== "ttcoach") throw new Error("このアプリのバックアップではありません");
       if (!confirm("バックアップの内容を取り込みます(同じ記録は上書き)。よろしいですか?")) return;
-      for (const s of ["players", "matches", "practices", "tasks", "settings"]) for (const v of data[s] || []) await put(s, v);
+      for (const s of ["players", "matches", "practices", "tasks", "settings", "notes"]) for (const v of data[s] || []) await put(s, v);
       toast("復元しました"); location.hash = "#/";
     } catch (e) { alert("復元できませんでした: " + e.message); }
   };
