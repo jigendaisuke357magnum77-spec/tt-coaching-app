@@ -229,7 +229,10 @@ const OPP_FIELDS = [
 // 試合の「vs ○○」の表示(対戦相手を選んでいれば名前とチーム)
 const HANDS = [["R", "右利き"], ["L", "左利き"]];
 const handLabel = (h) => (h === "L" ? "左" : h === "R" ? "右" : "");
-const vsLabel = (m) => (m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手")) + (m.oppHand ? `・${handLabel(m.oppHand)}` : "");
+// 相手のラバーの種類(フォア面・バック面)
+const RUBBERS = ["裏ソフト", "表ソフト", "粒高", "アンチ", "一枚ラバー"];
+const rubberLabel = (o) => (o.oppRubberF || o.oppRubberB ? `F${o.oppRubberF || "?"}/B${o.oppRubberB || "?"}` : "");
+const vsLabel = (m) => (m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手")) + (m.oppHand ? `・${handLabel(m.oppHand)}` : "") + (rubberLabel(m) ? `・${rubberLabel(m)}` : "");
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
 const PRACTICE_KINDS = ["フォアドライブ", "バックドライブ", "サーブ練習", "レシーブ練習", "多球練習", "フットワーク", "ツッツキ", "ゲーム練習"];
 let currentUrl = null;
@@ -529,12 +532,12 @@ async function screenOpponents() {
   const draw = () => {
     document.getElementById("ostyles").innerHTML = styles.length ? [`<button class="chip ${style ? "" : "on"}" data-st="">すべての戦型</button>`, ...styles.map((st) => `<button class="chip ${style === st ? "on" : ""}" data-st="${esc(st)}">${esc(st)}</button>`)].join("") : "";
     const k = q.toLowerCase();
-    const hit = opps.filter((o) => (!style || o.style === style) && (!k || [o.name, o.team, o.style, ...OPP_FIELDS.map(([f]) => o[f])].join(" ").toLowerCase().includes(k)))
+    const hit = opps.filter((o) => (!style || o.style === style) && (!k || [o.name, o.team, o.style, o.rubberF, o.rubberB, ...OPP_FIELDS.map(([f]) => o[f])].join(" ").toLowerCase().includes(k)))
       .sort((a, b) => (b.updated || 0) - (a.updated || 0));
     document.getElementById("olist").innerHTML = hit.length ? hit.map((o) => {
       const ms = matches.filter((m) => m.opponentId === o.id), w = ms.filter((m) => m.result === "win").length, l = ms.filter((m) => m.result === "lose").length;
       return `<button class="list-item" data-go="#/o/${o.id}"><span class="avatar">${esc(o.name.slice(0, 1))}</span>
-        <span class="grow"><b>${esc(o.name)}</b> <span class="muted">${esc(o.team || "")}</span><br><span class="muted">${esc(o.style || "戦型未登録")}${ms.length ? ` ・ ${w}勝${l}敗` : ""}</span></span><span class="muted">›</span></button>`;
+        <span class="grow"><b>${esc(o.name)}</b> <span class="muted">${esc(o.team || "")}</span><br><span class="muted">${esc(o.style || "戦型未登録")}${o.rubberF || o.rubberB ? ` ・ F${esc(o.rubberF || "?")}/B${esc(o.rubberB || "?")}` : ""}${ms.length ? ` ・ ${w}勝${l}敗` : ""}</span></span><span class="muted">›</span></button>`;
     }).join("") : `<div class="empty">${opps.length ? "見つかりません" : "まだ登録がありません。<br>右下の「+ 対戦相手」か、試合記録の「対戦相手」から登録できます。"}</div>`;
     bindGo();
     $app.querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { style = b.dataset.st; draw(); }));
@@ -556,6 +559,9 @@ async function screenOpponent(oid) {
       <label>戦型</label>
       <select id="o_style"><option value="">選択してください</option>${[...new Set([...OPP_STYLES, o.style].filter(Boolean))].map((st) => `<option ${st === o.style ? "selected" : ""}>${esc(st)}</option>`).join("")}</select>
     </div>
+    <div class="card" style="margin-top:-4px"><div class="row">
+      <div class="grow"><label style="margin-top:0">フォア面のラバー</label><select id="o_rf"><option value="">わからない</option>${RUBBERS.map((r) => `<option ${o.rubberF === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div class="grow"><label style="margin-top:0">バック面のラバー</label><select id="o_rb"><option value="">わからない</option>${RUBBERS.map((r) => `<option ${o.rubberB === r ? "selected" : ""}>${r}</option>`).join("")}</select></div></div></div>
     <h2>攻略メモ</h2>
     <div class="card">${OPP_FIELDS.map(([f, label, ph]) => `<label>${label}</label><textarea data-of="${f}" placeholder="${esc(ph)}" style="min-height:52px">${esc(o[f] || "")}</textarea>`).join("")}</div>
     <h2>この相手との試合(${matches.length ? `${w}勝${l}敗` : "まだなし"})</h2>
@@ -567,6 +573,7 @@ async function screenOpponent(oid) {
   const save = async () => {
     o.name = document.getElementById("o_name").value.trim() || o.name; o.team = document.getElementById("o_team").value.trim();
     o.style = document.getElementById("o_style").value;
+    o.rubberF = document.getElementById("o_rf").value; o.rubberB = document.getElementById("o_rb").value;
     $app.querySelectorAll("[data-of]").forEach((t) => (o[t.dataset.of] = t.value.trim()));
     o.updated = Date.now(); await put("opponents", o);
     // 試合記録側の表示名もそろえる
@@ -657,6 +664,9 @@ async function screenMatch(mid) {
       <select id="opp"><option value="">選択してください</option>${OPP_TYPES.map((o) => `<option ${o === m.oppType ? "selected" : ""}>${o}</option>`).join("")}</select>
       <label>相手の利き手</label>
       <div class="chips" id="handChips">${HANDS.map(([v, l]) => `<button class="chip ${m.oppHand === v ? "on" : ""}" data-hand="${v}">${l}</button>`).join("")}</div>
+      <label>相手のラバー</label>
+      ${[["oppRubberF", "フォア面"], ["oppRubberB", "バック面"]].map(([k, l]) => `<div class="row" style="flex-wrap:wrap;margin-top:4px"><span class="muted" style="min-width:64px;font-size:14px">${l}</span>
+        <div class="chips" style="margin:0">${RUBBERS.map((r) => `<button class="chip ${m[k] === r ? "on" : ""}" data-rub="${k}" data-v="${r}">${r}</button>`).join("")}</div></div>`).join("")}
       <label>対戦相手(攻略メモ)</label>
       <div class="row"><select id="oppSel" class="grow"><option value="">選ばない</option>${opps.map((o) => `<option value="${o.id}" ${o.id === m.opponentId ? "selected" : ""}>${esc(o.name)}${o.team ? `(${esc(o.team)})` : ""}</option>`).join("")}<option value="__new">+ 新しく登録…</option></select>
         ${m.opponentId ? `<button class="chip" data-go="#/o/${m.opponentId}">攻略メモ ›</button>` : ""}</div>
@@ -694,6 +704,11 @@ async function screenMatch(mid) {
     document.querySelectorAll("#handChips [data-hand]").forEach((c) => c.classList.toggle("on", c.dataset.hand === m.oppHand));
     await save();
   }));
+  document.querySelectorAll("[data-rub]").forEach((b) => (b.onclick = async () => {
+    const k = b.dataset.rub; m[k] = m[k] === b.dataset.v ? "" : b.dataset.v;
+    document.querySelectorAll(`[data-rub="${k}"]`).forEach((c) => c.classList.toggle("on", c.dataset.v === m[k]));
+    await save();
+  }));
   document.getElementById("oppSel").onchange = async (e) => {
     let id = e.target.value;
     if (id === "__new") {
@@ -705,6 +720,8 @@ async function screenMatch(mid) {
     m.opponentId = o ? o.id : null; m.oppName = o ? o.name : ""; m.oppTeam = o ? o.team || "" : "";
     // 攻略メモの戦型が「右〜」「左〜」なら利き手もそろえる
     if (o && /^[右左]/.test(o.style || "")) m.oppHand = o.style[0] === "左" ? "L" : "R";
+    if (o && o.rubberF) m.oppRubberF = o.rubberF;
+    if (o && o.rubberB) m.oppRubberB = o.rubberB;
     await save(); render();
   };
   editingGame = -1;
