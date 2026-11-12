@@ -227,7 +227,9 @@ const OPP_FIELDS = [
   ["memo", "その他メモ", ""],
 ];
 // 試合の「vs ○○」の表示(対戦相手を選んでいれば名前とチーム)
-const vsLabel = (m) => m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手");
+const HANDS = [["R", "右利き"], ["L", "左利き"]];
+const handLabel = (h) => (h === "L" ? "左" : h === "R" ? "右" : "");
+const vsLabel = (m) => (m.oppName ? `${m.oppName}${m.oppTeam ? `(${m.oppTeam})` : ""}` : (m.oppType || "相手")) + (m.oppHand ? `・${handLabel(m.oppHand)}` : "");
 const MARK_PRESETS = ["サーブが浮いた", "足が止まった", "レシーブが良かった", "3球目が決まった", "台から離れすぎ", "戻りが遅い"];
 const PRACTICE_KINDS = ["フォアドライブ", "バックドライブ", "サーブ練習", "レシーブ練習", "多球練習", "フットワーク", "ツッツキ", "ゲーム練習"];
 let currentUrl = null;
@@ -653,6 +655,8 @@ async function screenMatch(mid) {
       <label>日付</label><input type="date" id="date" value="${esc(m.date)}">
       <label>相手のタイプ</label>
       <select id="opp"><option value="">選択してください</option>${OPP_TYPES.map((o) => `<option ${o === m.oppType ? "selected" : ""}>${o}</option>`).join("")}</select>
+      <label>相手の利き手</label>
+      <div class="chips" id="handChips">${HANDS.map(([v, l]) => `<button class="chip ${m.oppHand === v ? "on" : ""}" data-hand="${v}">${l}</button>`).join("")}</div>
       <label>対戦相手(攻略メモ)</label>
       <div class="row"><select id="oppSel" class="grow"><option value="">選ばない</option>${opps.map((o) => `<option value="${o.id}" ${o.id === m.opponentId ? "selected" : ""}>${esc(o.name)}${o.team ? `(${esc(o.team)})` : ""}</option>`).join("")}<option value="__new">+ 新しく登録…</option></select>
         ${m.opponentId ? `<button class="chip" data-go="#/o/${m.opponentId}">攻略メモ ›</button>` : ""}</div>
@@ -685,6 +689,11 @@ async function screenMatch(mid) {
   for (const [id, key] of [["date", "date"], ["opp", "oppType"]]) {
     document.getElementById(id).onchange = (e) => { m[key] = e.target.value; save(); };
   }
+  document.querySelectorAll("#handChips [data-hand]").forEach((b) => (b.onclick = async () => {
+    m.oppHand = m.oppHand === b.dataset.hand ? "" : b.dataset.hand;
+    document.querySelectorAll("#handChips [data-hand]").forEach((c) => c.classList.toggle("on", c.dataset.hand === m.oppHand));
+    await save();
+  }));
   document.getElementById("oppSel").onchange = async (e) => {
     let id = e.target.value;
     if (id === "__new") {
@@ -694,6 +703,8 @@ async function screenMatch(mid) {
     }
     const o = opps.find((x) => x.id === id);
     m.opponentId = o ? o.id : null; m.oppName = o ? o.name : ""; m.oppTeam = o ? o.team || "" : "";
+    // 攻略メモの戦型が「右〜」「左〜」なら利き手もそろえる
+    if (o && /^[右左]/.test(o.style || "")) m.oppHand = o.style[0] === "左" ? "L" : "R";
     await save(); render();
   };
   editingGame = -1;
